@@ -1,6 +1,6 @@
 ---
 name: siyuan-agent-access
-description: Use a user's SiYuan notes through the policy-aware Agent Access plugin tools for scoped search, reading, writing, summarization, tagging, and memory persistence.
+description: Use a user's SiYuan notes through the policy-aware Agent Access plugin tools for scoped search, reading, writing, safe two-stage rename and move, summarization, optional tagging, memory persistence, and metadata-only audit review.
 ---
 
 # SiYuan Agent Access
@@ -55,6 +55,13 @@ The native SiYuan MCP server may expose other administrator-level tools. Their p
 - Present a summary before persisting it unless the user already requested persistence.
 - Use `save_memory` only for durable facts, decisions, preferences, reusable procedures, or important unresolved questions.
 - Avoid saving transient chat, speculative conclusions, secrets, or duplicated material.
+
+## Audit review
+
+- Use `get_audit_log` only when the user asks to inspect recent plugin activity, outcomes, or policy enforcement.
+- Request the smallest useful `limit`; the accepted range is 1-200 and the default is 50.
+- Treat audit entries as metadata, not note content. They record outcomes, lengths, and tag counts but never document bodies.
+- Do not infer inaccessible notebook names or note contents from audit metadata.
 
 ## Error handling
 
