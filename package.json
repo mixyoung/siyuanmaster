@@ -1,0 +1,26 @@
+{
+  "name": "siyuan-agent-access",
+  "version": "0.2.1",
+  "private": true,
+  "description": "A native SiYuan plugin that exposes policy-aware MCP tools for trusted local agents.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "pnpm run typecheck && pnpm run test && node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.1",
+    "esbuild": "^0.25.6",
+    "siyuan": "1.2.3",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
