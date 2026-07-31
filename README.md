@@ -2,11 +2,13 @@
 
 A native SiYuan plugin for trusted local agents.
 
-The plugin provides a sidebar, notebook allow/deny policy, per-operation permissions, optional custom/AI tagging rules, audit metadata, and 15 policy-aware tools registered into SiYuan's built-in `/mcp` endpoint. Its text, form controls, and buttons follow SiYuan's editor font-size setting, with a readable floor for supporting text. It does not start a separate Node or Python service.
+The plugin provides a sidebar, notebook allow/deny policy, per-operation permissions, optional custom/AI tagging rules, audit metadata, and 16 policy-aware tools registered into SiYuan's built-in `/mcp` endpoint. Its text, form controls, and buttons follow SiYuan's editor font-size setting, with a readable floor for supporting text. It does not start a separate Node or Python service.
 
 The safe default is an empty allowlist, so no note is accessible until the user selects notebooks in the GUI. Tagging never requires or forces a `siyuanMCP` tag; existing tags are preserved and new tags are appended and de-duplicated.
 
 Agents should call `plugin__siyuan_agent_access__get_policy` and `plugin__siyuan_agent_access__list_accessible_notebooks` before using the remaining tools.
+
+`list_document_tree` provides bounded, metadata-only hierarchy browsing inside one accessible notebook. It requires `notebookId`, optionally scopes to `parentDocumentId`, defaults to 3 levels and 200 nodes, and reports whether depth or node limits truncated the result. It never returns document bodies.
 
 ## Structural changes
 

@@ -1,4 +1,8 @@
 import type * as kernel from "siyuan/kernel";
+import {
+  documentTreePathDepth,
+  type DocumentTreeRow,
+} from "./document-tree";
 import type { NotebookSummary } from "./types";
 
 interface KernelApiEnvelope<T> {
@@ -36,6 +40,17 @@ export interface MarkdownExport {
 
 interface CountRow {
   count: number | string;
+}
+
+interface DocumentTreeCountRow {
+  total_count: number | string;
+  eligible_count: number | string;
+}
+
+export interface DocumentTreeQueryResult {
+  rows: DocumentTreeRow[];
+  totalCount: number;
+  eligibleCount: number;
 }
 
 const SIYUAN_ID_PATTERN = /^\d{14}-[a-z0-9]{7}$/;
@@ -256,6 +271,74 @@ export class KernelApiClient {
     );
     const count = Number(rows[0]?.count ?? 0);
     return Number.isFinite(count) ? count : 0;
+  }
+
+  async listDocumentTree(input: {
+    notebookId: string;
+    parentDocument?: BlockRecord;
+    maxDepth: number;
+    maxNodes: number;
+  }): Promise<DocumentTreeQueryResult> {
+    const notebookId = assertSiyuanId(input.notebookId, "notebookId");
+    const parent = input.parentDocument;
+    const baseDepth = parent ? documentTreePathDepth(parent.path) : 0;
+    const depthLimit = baseDepth + input.maxDepth;
+    const depthExpression =
+      "(LENGTH(d.path) - LENGTH(REPLACE(d.path, '/', '')))";
+    const scope = parent
+      ? `AND (
+           d.id = '${escapeSqlLiteral(parent.id)}'
+           OR d.path LIKE '${escapeSqlLiteral(
+             parent.path.replace(/\.sy$/i, ""),
+           )}/%'
+         )`
+      : "";
+    const commonWhere = `d.type = 'd'
+       AND d.id = d.root_id
+       AND d.box = '${escapeSqlLiteral(notebookId)}'
+       ${scope}`;
+
+    const counts = await this.sql<DocumentTreeCountRow>(
+      `SELECT
+         COUNT(*) AS total_count,
+         COALESCE(SUM(CASE
+           WHEN ${depthExpression} <= ${depthLimit} THEN 1
+           ELSE 0
+         END), 0) AS eligible_count
+       FROM blocks d
+       WHERE ${commonWhere}`,
+    );
+    const rows = await this.sql<DocumentTreeRow>(
+      `SELECT
+         d.id AS id,
+         d.path AS path,
+         d.hpath AS hpath,
+         d.content AS title,
+         d.updated AS updated,
+         CASE WHEN EXISTS (
+           SELECT 1
+           FROM blocks child
+           WHERE child.type = 'd'
+             AND child.id = child.root_id
+             AND child.box = d.box
+             AND child.path LIKE (
+               SUBSTR(d.path, 1, LENGTH(d.path) - 3) || '/%'
+             )
+           LIMIT 1
+         ) THEN 1 ELSE 0 END AS has_children
+       FROM blocks d
+       WHERE ${commonWhere}
+         AND ${depthExpression} <= ${depthLimit}
+       ORDER BY d.path ASC
+       LIMIT ${input.maxNodes}`,
+    );
+    const totalCount = Number(counts[0]?.total_count ?? 0);
+    const eligibleCount = Number(counts[0]?.eligible_count ?? 0);
+    return {
+      rows,
+      totalCount: Number.isFinite(totalCount) ? totalCount : 0,
+      eligibleCount: Number.isFinite(eligibleCount) ? eligibleCount : 0,
+    };
   }
 
   async getBlockAttrs(

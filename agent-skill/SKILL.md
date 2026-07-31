@@ -1,6 +1,6 @@
 ---
 name: siyuan-agent-access
-description: Use a user's SiYuan notes through the policy-aware Agent Access plugin tools for scoped search, reading, writing, safe two-stage rename and move, summarization, optional tagging, memory persistence, and metadata-only audit review.
+description: Use a user's SiYuan notes through the policy-aware Agent Access plugin tools for bounded document-tree browsing, scoped search, reading, writing, safe two-stage rename and move, summarization, optional tagging, memory persistence, and metadata-only audit review.
 ---
 
 # SiYuan Agent Access
@@ -17,10 +17,12 @@ The native SiYuan MCP server may expose other administrator-level tools. Their p
 
 ## Retrieval
 
-1. Use `search_notes` with a focused query.
-2. Read only the most relevant results with `read_note`.
-3. Respect `truncated=true`; ask for another bounded read only when required.
-4. Do not infer the existence or name of inaccessible notebooks from errors.
+1. Use `list_document_tree` when the user needs notebook hierarchy or must choose a document by location.
+2. Start with bounded defaults. If the tree is truncated, use `parentDocumentId` to inspect only the relevant branch instead of broadly increasing limits.
+3. Use `search_notes` with a focused query when the user is looking for content rather than structure.
+4. Read only the most relevant results with `read_note`.
+5. Respect every `truncated=true` result; request another bounded tree or read only when required.
+6. Do not infer the existence or name of inaccessible notebooks from errors.
 
 ## Writes
 

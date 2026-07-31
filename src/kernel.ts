@@ -15,6 +15,7 @@ import {
   KernelApiClient,
   normalizeDocumentTitle,
 } from "./kernel-api";
+import { buildDocumentTree } from "./document-tree";
 import {
   evaluateOperation,
   normalizeTags,
@@ -165,13 +166,17 @@ function genericToolConfig(
   return {
     title,
     description,
-    readOnly,
+    annotations: {
+      readOnlyHint: readOnly,
+    },
     inputSchema,
     outputSchema: {
       type: "object",
       additionalProperties: true,
     },
-  } as kernel.IMcpToolConfig & { readOnly: boolean };
+  } as kernel.IMcpToolConfig & {
+    annotations: { readOnlyHint: boolean };
+  };
 }
 
 function confirmedProperty(): Record<string, unknown> {
@@ -240,6 +245,7 @@ class AgentAccessKernelPlugin {
 
     await this.registerPolicyTool();
     await this.registerNotebookTool();
+    await this.registerDocumentTreeTool();
     await this.registerSearchTool();
     await this.registerReadTool();
     await this.registerCreateTool();
@@ -608,6 +614,7 @@ class AgentAccessKernelPlugin {
         toolWorkflow: [
           "Call get_policy first.",
           "Use list_accessible_notebooks before choosing a notebook.",
+          "Use list_document_tree for bounded structural browsing without note bodies.",
           "Use search_notes, then read_note for focused retrieval.",
           "For decisions marked confirm, obtain user approval before retrying with confirmed=true.",
           "In tag mode ask, pass tagging.decision='add' or 'skip' for each write.",
@@ -662,6 +669,112 @@ class AgentAccessKernelPlugin {
             };
           },
         ),
+    );
+  }
+
+  private async registerDocumentTreeTool(): Promise<void> {
+    await this.registerTool(
+      "list_document_tree",
+      genericToolConfig(
+        "List Allowed Document Tree",
+        "Returns a bounded document hierarchy from one allowed notebook or document. Only IDs, titles, paths, depth, update time, and child presence are returned; note bodies are never included.",
+        {
+          type: "object",
+          properties: {
+            notebookId: {
+              type: "string",
+              description: "Allowed notebook ID whose tree should be listed.",
+            },
+            parentDocumentId: {
+              type: "string",
+              description:
+                "Optional exact document ID to use as the returned tree root.",
+            },
+            maxDepth: {
+              type: "number",
+              minimum: 1,
+              maximum: 10,
+              description:
+                "Maximum relative depth, 1-10. Default 3. With a parentDocumentId, the selected root is depth 0.",
+            },
+            maxNodes: {
+              type: "number",
+              minimum: 1,
+              maximum: 500,
+              description: "Maximum returned documents, 1-500. Default 200.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["notebookId"],
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const notebookId =
+          typeof input.notebookId === "string"
+            ? input.notebookId
+            : undefined;
+        const parentDocumentId = optionalString(input.parentDocumentId);
+        return this.runTool(
+          "list_document_tree",
+          true,
+          {
+            notebookId,
+            documentId: parentDocumentId,
+            confirmed,
+          },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            const notebook = await this.assertNotebookAllowed(
+              input.notebookId,
+            );
+            const parentContext = parentDocumentId
+              ? await this.assertExactDocumentAllowed(
+                  parentDocumentId,
+                  "parentDocumentId",
+                )
+              : undefined;
+            if (
+              parentContext &&
+              parentContext.document.box !== notebook.id
+            ) {
+              throw new PolicyViolation(
+                "invalid_request",
+                "parentDocumentId does not belong to notebookId",
+              );
+            }
+            const maxDepth = boundedInteger(input.maxDepth, 3, 1, 10);
+            const maxNodes = boundedInteger(input.maxNodes, 200, 1, 500);
+            const listing = await this.client.listDocumentTree({
+              notebookId: notebook.id,
+              parentDocument: parentContext?.document,
+              maxDepth,
+              maxNodes,
+            });
+            const returnedCount = listing.rows.length;
+            return {
+              notebook: { id: notebook.id, name: notebook.name },
+              rootDocumentId: parentContext?.document.id ?? null,
+              maxDepth,
+              maxNodes,
+              totalCount: listing.totalCount,
+              eligibleCount: listing.eligibleCount,
+              returnedCount,
+              truncated: returnedCount < listing.totalCount,
+              truncatedByDepth:
+                listing.eligibleCount < listing.totalCount,
+              truncatedByNodeLimit:
+                returnedCount < listing.eligibleCount,
+              tree: buildDocumentTree(
+                listing.rows,
+                parentContext?.document.id,
+              ),
+            };
+          },
+        );
+      },
     );
   }
 
