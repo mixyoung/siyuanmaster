@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "product": {
     "id": "siyuanmaster",
-    "technicalId": "siyuan-agent-access",
+    "technicalId": "siyuanmaster",
     "displayName": {
       "default": "SiYuanMaster",
       "zh-CN": "思源大师"
     },
-    "version": "0.4.0",
+    "version": "0.5.0",
     "minAppVersion": "3.7.0"
   },
   "namespaces": {
-    "plugin": "plugin__siyuan_agent_access__",
+    "plugin": "plugin__siyuanmaster__",
     "gateway": "siyuanmaster"
   },
   "pluginTools": [
@@ -229,7 +229,7 @@
   },
   "compatibility": {
     "originalToolCount": 16,
-    "technicalIdPolicy": "retain-for-transition",
-    "note": "For P0/P1 the plugin.json technical ID stays siyuan-agent-access so existing installations, the petal storage path, and the original 16 fully-qualified tool names (plugin__siyuan_agent_access__*) keep working unchanged. The SiYuan kernel derives the MCP namespace from the plugin.json name (verified in kernel source plugin/api_mcp.go at v3.8.0-alpha.2: plugin__<sanitized-plugin>__<sanitized-tool>), so a single plugin cannot register two native namespaces. Switching the technical ID to siyuanmaster is a later release gate (dual-plugin or migration bridge) and must not be claimed for this round. The capability catalog stores only bare tool names and capability metadata; fully-qualified names are computed from the current technical ID."
+    "technicalIdPolicy": "siyuanmaster-with-storage-migration",
+    "note": "0.5.0 technical ID is siyuanmaster; MCP tools are plugin__siyuanmaster__*. On first load, policy/audit are auto-copied from data/storage/petal/siyuan-agent-access/ into data/storage/petal/siyuanmaster/ when the new side is missing (new always wins; fail-closed defaults; migration marker for idempotency). The legacy petal directory is retained and never deleted. External agent/skill configs must still be updated manually to the new MCP namespace."
   }
 }

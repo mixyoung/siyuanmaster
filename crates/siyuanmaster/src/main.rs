@@ -416,8 +416,7 @@ fn migrate_command(args: &Args) -> Result<(), String> {
     .collect();
     if !has_access {
         return Err(
-            "old config has no 'access' section; it is not a siyuan-agent-access policy file"
-                .to_string(),
+            "old config has no 'access' section; it is not a siyuanmaster policy file".to_string(),
         );
     }
 

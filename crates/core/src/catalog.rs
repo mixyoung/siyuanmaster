@@ -127,9 +127,9 @@ pub struct Compatibility {
 const TOOL_NAME_PATTERN: &str = "^[a-z][a-z0-9_]*$";
 
 /// Mirrors the SiYuan kernel's sanitization of plugin/tool names
-/// (`util.SanitizeName`, observed result: `siyuan-agent-access` ->
-/// `siyuan_agent_access`): lowercase ASCII alphanumerics are kept, any
-/// other character becomes `_`.
+/// (`util.SanitizeName`, e.g. `siyuan-agent-access` -> `siyuan_agent_access`,
+/// `siyuanmaster` stays `siyuanmaster`): lowercase ASCII alphanumerics are
+/// kept, any other character becomes `_`.
 pub fn sanitize_name(name: &str) -> String {
     let mut result = String::with_capacity(name.len());
     for character in name.chars() {
@@ -253,9 +253,8 @@ impl Catalog {
     }
 }
 
-/// The original 16 tool names shipped by `siyuan-agent-access` v0.3.0.
-/// They keep their exact fully-qualified names after the brand migration
-/// because the technical ID is retained for the transition period.
+/// The original 16 bare tool names shipped by `siyuan-agent-access` v0.3.0.
+/// Since 0.5.0 they are fully qualified under `plugin__siyuanmaster__*`.
 pub fn original_tool_names() -> Vec<String> {
     [
         "get_policy",
@@ -305,13 +304,14 @@ mod tests {
     fn catalog_matches_spec_identity() {
         let catalog = Catalog::load().unwrap();
         assert_eq!(catalog.product.id, "siyuanmaster");
-        assert_eq!(catalog.product.technical_id, "siyuan-agent-access");
+        assert_eq!(catalog.product.technical_id, "siyuanmaster");
+        assert_eq!(catalog.product.version, "0.5.0");
         assert_eq!(catalog.product.display_name.zh_cn, "思源大师");
         assert_eq!(catalog.product.display_name.default, "SiYuanMaster");
-        assert_eq!(catalog.namespaces.plugin, "plugin__siyuan_agent_access__");
+        assert_eq!(catalog.namespaces.plugin, "plugin__siyuanmaster__");
         assert_eq!(
-            Catalog::derived_plugin_namespace("siyuan-agent-access"),
-            "plugin__siyuan_agent_access__"
+            Catalog::derived_plugin_namespace("siyuanmaster"),
+            "plugin__siyuanmaster__"
         );
     }
 
@@ -360,18 +360,18 @@ mod tests {
         assert_eq!(fq.len(), 19);
         for name in &fq {
             assert!(
-                name.starts_with("plugin__siyuan_agent_access__"),
+                name.starts_with("plugin__siyuanmaster__"),
                 "unexpected namespace in {name}"
             );
             assert!(
-                !name.contains("siyuanmaster"),
-                "second namespace leaked into {name}"
+                !name.contains("siyuan_agent_access"),
+                "legacy namespace leaked into {name}"
             );
         }
-        // The original 16 keep their exact historical fully-qualified names.
+        // Bare original 16 tools are fully qualified under the current technical id.
         for name in original_tool_names() {
-            let expected = format!("plugin__siyuan_agent_access__{name}");
-            assert!(fq.contains(&expected), "missing historical name {expected}");
+            let expected = format!("plugin__siyuanmaster__{name}");
+            assert!(fq.contains(&expected), "missing current fq name {expected}");
         }
     }
 
