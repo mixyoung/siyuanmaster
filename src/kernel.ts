@@ -250,7 +250,11 @@ class SiYuanMasterKernelPlugin {
   >();
 
   constructor() {
+    // SiYuan kernel invokes every IPluginLifecycle field; unbound values
+    // (undefined / non-function) surface as "not bound to a function".
+    // onrunning is post-onload "running" — no re-init or tool registration.
     this.api.plugin.lifecycle.onload = this.onload.bind(this);
+    this.api.plugin.lifecycle.onrunning = this.onrunning.bind(this);
     this.api.plugin.lifecycle.onunload = this.onunload.bind(this);
   }
 
@@ -293,6 +297,14 @@ class SiYuanMasterKernelPlugin {
     await this.api.logger.info(
       `SiYuanMaster loaded with ${this.registeredTools.length} MCP tools (technical id siyuanmaster)`,
     );
+  }
+
+  /**
+   * Kernel "running" transition after onload. Intentionally empty: tools and
+   * RPC are registered in onload; re-doing that here would double-register.
+   */
+  private async onrunning(): Promise<void> {
+    // no-op: IPluginLifecycle requires a bound function on SiYuan 3.8+
   }
 
   private async onunload(): Promise<void> {
