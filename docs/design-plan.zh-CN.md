@@ -1,4 +1,4 @@
-# SiYuan Agent Access Plugin 设计规划
+# 思源大师（SiYuanMaster）设计规划
 
 > 状态：持续增量设计  
 > 版本：v0.4
@@ -8,7 +8,7 @@
 
 ## 1. 产品定位
 
-本项目交付物是一个可安装到思源笔记中的原生插件，暂定名为 `siyuan-agent-access`。
+本项目交付物是一个可安装到思源笔记中的原生插件，现技术名为 `siyuanmaster`（品牌 SiYuanMaster / 思源大师）。
 
 它由两部分组成：
 
@@ -249,7 +249,7 @@ GUI 要求：
 权限配置保存在插件私有存储：
 
 ```text
-data/storage/petal/siyuan-agent-access/policy.json
+data/storage/petal/siyuanmaster/policy.json
 ```
 
 权限配置不保存在普通笔记中，避免被 AI 搜索、修改或删除。
@@ -298,22 +298,22 @@ data/storage/petal/siyuan-agent-access/policy.json
 
 | 工具 | 作用 | 默认风险 |
 |---|---|---|
-| `plugin__siyuan_agent_access__get_policy` | 返回 AI 可理解的权限和使用规则 | 只读 |
-| `plugin__siyuan_agent_access__list_accessible_notebooks` | 只列出允许范围 | 只读 |
-| `plugin__siyuan_agent_access__list_document_tree` | 在授权范围内有界列出文档层级，不返回正文 | 只读 |
-| `plugin__siyuan_agent_access__search_notes` | 在允许范围内搜索 | 只读 |
-| `plugin__siyuan_agent_access__read_note` | 读取允许的文档 | 只读 |
-| `plugin__siyuan_agent_access__create_note` | 创建文档 | 写入 |
-| `plugin__siyuan_agent_access__append_note` | 追加内容 | 写入 |
-| `plugin__siyuan_agent_access__update_note` | 修改正文 | 需确认 |
-| `plugin__siyuan_agent_access__rename_note` | 两阶段安全重命名 | 预演后确认 |
-| `plugin__siyuan_agent_access__move_note` | 两阶段安全移动整棵文档树 | 预演后确认；跨笔记本默认禁止 |
-| `plugin__siyuan_agent_access__delete_note` | 删除整篇文档 | 默认禁止且始终确认 |
-| `plugin__siyuan_agent_access__suggest_tags` | 根据最终文档内容生成标签候选 | 只读提案 |
-| `plugin__siyuan_agent_access__apply_tags` | 应用用户确认的标签 | 写入 |
-| `plugin__siyuan_agent_access__prepare_summary` | 返回有界正文和总结约束 | 只读 |
-| `plugin__siyuan_agent_access__save_memory` | 创建或追加已批准的记忆 | 写入 |
-| `plugin__siyuan_agent_access__get_audit_log` | 查询插件审计记录 | 只读 |
+| `plugin__siyuanmaster__get_policy` | 返回 AI 可理解的权限和使用规则 | 只读 |
+| `plugin__siyuanmaster__list_accessible_notebooks` | 只列出允许范围 | 只读 |
+| `plugin__siyuanmaster__list_document_tree` | 在授权范围内有界列出文档层级，不返回正文 | 只读 |
+| `plugin__siyuanmaster__search_notes` | 在允许范围内搜索 | 只读 |
+| `plugin__siyuanmaster__read_note` | 读取允许的文档 | 只读 |
+| `plugin__siyuanmaster__create_note` | 创建文档 | 写入 |
+| `plugin__siyuanmaster__append_note` | 追加内容 | 写入 |
+| `plugin__siyuanmaster__update_note` | 修改正文 | 需确认 |
+| `plugin__siyuanmaster__rename_note` | 两阶段安全重命名 | 预演后确认 |
+| `plugin__siyuanmaster__move_note` | 两阶段安全移动整棵文档树 | 预演后确认；跨笔记本默认禁止 |
+| `plugin__siyuanmaster__delete_note` | 删除整篇文档 | 默认禁止且始终确认 |
+| `plugin__siyuanmaster__suggest_tags` | 根据最终文档内容生成标签候选 | 只读提案 |
+| `plugin__siyuanmaster__apply_tags` | 应用用户确认的标签 | 写入 |
+| `plugin__siyuanmaster__prepare_summary` | 返回有界正文和总结约束 | 只读 |
+| `plugin__siyuanmaster__save_memory` | 创建或追加已批准的记忆 | 写入 |
+| `plugin__siyuanmaster__get_audit_log` | 查询插件审计记录 | 只读 |
 
 每个工具处理器必须按以下顺序执行：
 
@@ -383,7 +383,7 @@ data/storage/petal/siyuan-agent-access/policy.json
 1. Agent 连接 `/mcp`。
 2. Agent 获取工具列表。
 3. 首次调用 `get_policy`。
-4. 只使用 `plugin__siyuan_agent_access__*` 工具。
+4. 只使用 `plugin__siyuanmaster__*` 工具。
 5. 写入后读取工具返回的标签和审计结果。
 
 ### 4.2 多个 Agent

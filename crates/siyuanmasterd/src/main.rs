@@ -884,11 +884,8 @@ mod tests {
         assert_eq!(status, 200);
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["product"]["id"], "siyuanmaster");
-        assert_eq!(parsed["product"]["technicalId"], "siyuan-agent-access");
-        assert_eq!(
-            parsed["namespaces"]["plugin"],
-            "plugin__siyuan_agent_access__"
-        );
+        assert_eq!(parsed["product"]["technicalId"], "siyuanmaster");
+        assert_eq!(parsed["namespaces"]["plugin"], "plugin__siyuanmaster__");
         assert_eq!(parsed["pluginTools"].as_array().unwrap().len(), 19);
     }
 

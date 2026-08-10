@@ -1,16 +1,16 @@
 ---
 name: siyuanmaster
-description: Use a user's SiYuan notes through the SiYuanMaster (technical id siyuan-agent-access) policy-aware plugin tools for bounded document-tree browsing, path lookup, segmented long reads, scoped search, reading, writing, safe block edit, safe two-stage rename and move, summarization, optional tagging, memory persistence, and metadata-only audit review.
+description: Use a user's SiYuan notes through the SiYuanMaster (technical id siyuanmaster) policy-aware plugin tools for bounded document-tree browsing, path lookup, segmented long reads, scoped search, reading, writing, safe block edit, safe two-stage rename and move, summarization, optional tagging, memory persistence, and metadata-only audit review.
 ---
 
-# SiYuanMaster (technical id: siyuan-agent-access)
+# SiYuanMaster (technical id: siyuanmaster)
 
-Use only `plugin__siyuan_agent_access__*` tools when the user expects notebook access controls to apply. Brand name is SiYuanMaster / 思源大师; the MCP namespace stays under the technical id for the transition period.
+Use only `plugin__siyuanmaster__*` tools when the user expects notebook access controls to apply. Brand name is SiYuanMaster / 思源大师; MCP namespace is plugin__siyuanmaster__* (technical id siyuanmaster).
 
 ## Required start
 
-1. Call `plugin__siyuan_agent_access__get_policy`.
-2. Call `plugin__siyuan_agent_access__list_accessible_notebooks`.
+1. Call `plugin__siyuanmaster__get_policy`.
+2. Call `plugin__siyuanmaster__list_accessible_notebooks`.
 3. Treat every unlisted notebook as inaccessible.
 
 The native SiYuan MCP server may expose other administrator-level tools. Their presence does not mean they satisfy the user's notebook policy.
@@ -71,4 +71,4 @@ The native SiYuan MCP server may expose other administrator-level tools. Their p
 
 ## Security boundary
 
-Native `/mcp` is administrator-authenticated. Prefer the plugin tools above when the user asked for access control. Do not claim dual MCP namespaces or that storage was auto-migrated to a new technical id.
+Native `/mcp` is administrator-authenticated. Prefer the plugin tools above when the user asked for access control. Do not claim dual MCP namespaces. Storage from siyuan-agent-access is auto-copied into siyuanmaster on first load when the new side is missing; the old petal directory is retained. External configs must use plugin__siyuanmaster__* tool names.

@@ -1,21 +1,10 @@
 import type * as kernel from "siyuan/kernel";
+import {
+  AUDIT_STORAGE_KEY,
+  MAX_AUDIT_ENTRIES,
+  normalizeAuditEntries,
+} from "./migration";
 import type { AuditEntry, PluginPolicy } from "./types";
-
-const AUDIT_STORAGE_KEY = "audit.json";
-const MAX_AUDIT_ENTRIES = 2000;
-
-function normalizeEntries(value: unknown): AuditEntry[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter(
-    (entry): entry is AuditEntry =>
-      Boolean(entry) &&
-      typeof entry === "object" &&
-      typeof (entry as AuditEntry).timestamp === "string" &&
-      typeof (entry as AuditEntry).operation === "string",
-  );
-}
 
 export class AuditStore {
   constructor(
@@ -51,7 +40,7 @@ export class AuditStore {
       );
     } catch (error) {
       await this.api.logger.warn(
-        "Unable to persist Agent Access audit entry",
+        "Unable to persist SiYuanMaster audit entry",
         error instanceof Error ? error.message : String(error),
       );
     }
@@ -65,7 +54,7 @@ export class AuditStore {
   private async readAll(): Promise<AuditEntry[]> {
     try {
       const stored = await this.api.storage.get(AUDIT_STORAGE_KEY);
-      return normalizeEntries(await stored.json());
+      return normalizeAuditEntries(await stored.json());
     } catch {
       return [];
     }

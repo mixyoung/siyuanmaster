@@ -126,6 +126,45 @@ export class KernelApiClient {
     return payload.data;
   }
 
+  /**
+   * Read a workspace-relative JSON file (e.g. legacy petal paths).
+   * Returns undefined on missing/corrupt/error — fail closed.
+   */
+  async readWorkspaceJson(path: string): Promise<unknown | undefined> {
+    try {
+      const response = await this.api.client.fetch("/api/file/getFile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      if (!response.ok) {
+        return undefined;
+      }
+      const text = await response.text();
+      if (!text) {
+        return undefined;
+      }
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          !Array.isArray(parsed) &&
+          "code" in (parsed as Record<string, unknown>) &&
+          typeof (parsed as Record<string, unknown>).code === "number" &&
+          (parsed as Record<string, unknown>).code !== 0
+        ) {
+          return undefined;
+        }
+        return parsed;
+      } catch {
+        return undefined;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
   async sql<T>(statement: string): Promise<T[]> {
     return this.post<T[]>("/api/query/sql", { stmt: statement });
   }

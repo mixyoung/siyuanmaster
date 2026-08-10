@@ -51,15 +51,15 @@ describe("capability catalog freshness and identity", () => {
     expect(committed).toBe(rendered);
   });
 
-  it("declares brand siyuanmaster with transition technical id", () => {
+  it("declares brand and technical id as siyuanmaster at 0.5.0", () => {
     expect(PRODUCT_ID).toBe("siyuanmaster");
-    expect(TECHNICAL_ID).toBe("siyuan-agent-access");
-    expect(PRODUCT_VERSION).toBe("0.4.0");
-    expect(PLUGIN_NAMESPACE).toBe("plugin__siyuan_agent_access__");
+    expect(TECHNICAL_ID).toBe("siyuanmaster");
+    expect(PRODUCT_VERSION).toBe("0.5.0");
+    expect(PLUGIN_NAMESPACE).toBe("plugin__siyuanmaster__");
     expect(TXN_NAME).toBe("SafeWriteTxn");
   });
 
-  it("exposes 19 tools including the original 16 under one namespace", () => {
+  it("exposes 19 tools including the original 16 under siyuanmaster namespace", () => {
     expect(TOOL_NAMES).toHaveLength(19);
     expect(CATALOG_TOOLS).toHaveLength(19);
     expect(ORIGINAL_TOOL_COUNT).toBe(16);
@@ -71,25 +71,21 @@ describe("capability catalog freshness and identity", () => {
     expect(TOOL_NAMES).toContain("edit_block");
     expect(PLUGIN_TOOL_NAMES).toHaveLength(19);
     for (const fq of PLUGIN_TOOL_NAMES) {
-      expect(fq.startsWith("plugin__siyuan_agent_access__")).toBe(true);
-      expect(fq.startsWith("plugin__siyuanmaster__")).toBe(false);
+      expect(fq.startsWith("plugin__siyuanmaster__")).toBe(true);
+      expect(fq.startsWith("plugin__siyuan_agent_access__")).toBe(false);
     }
-    // Exactly original 16 fully-qualified names remain available under the
-    // retained technical namespace (plus 3 new tools in the same ns).
     for (const name of ORIGINAL_16) {
-      expect(PLUGIN_TOOL_NAMES).toContain(
-        `plugin__siyuan_agent_access__${name}`,
-      );
+      expect(PLUGIN_TOOL_NAMES).toContain(`plugin__siyuanmaster__${name}`);
     }
   });
 
   it("catalog stores only bare tool names and current namespace", () => {
     const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
-    expect(catalog.namespaces.plugin).toBe("plugin__siyuan_agent_access__");
+    expect(catalog.namespaces.plugin).toBe("plugin__siyuanmaster__");
     expect(catalog.namespaces.legacyPlugin).toBeUndefined();
-    expect(catalog.product.technicalId).toBe("siyuan-agent-access");
+    expect(catalog.product.technicalId).toBe("siyuanmaster");
     expect(catalog.compatibility.technicalIdPolicy).toBe(
-      "retain-for-transition",
+      "siyuanmaster-with-storage-migration",
     );
     for (const tool of catalog.pluginTools) {
       expect(tool.name).toMatch(/^[a-z][a-z0-9_]*$/);

@@ -4,7 +4,7 @@
 >
 > - 规格版本：1.2
 > - 产品基线：`siyuan-agent-access` v0.3.0（git 基线 94af5b2）
-> - 目标版本：0.4.0
+> - 目标版本：0.5.0
 > - 编写日期：2026-08-10
 > - 一致性声明：本文档描述**本仓库当前实际实现**。所有“已实现”条目均可在仓库中找到对应代码与测试；所有“未接入”或“未在思源实机验证”的行为均如实标注，不冒充已实现。
 
@@ -77,7 +77,7 @@
 
 ### 1.4 产品形态
 
-1. **思源原生插件**（TypeScript）：`plugin.json` **技术 name** = `siyuan-agent-access`（过渡期）；展示名 = SiYuanMaster / 思源大师；内核注册受控 MCP 工具并执行 Access Boundary + Safe Write Transaction。
+1. **思源原生插件**（TypeScript）：`plugin.json` **技术 name** = `siyuanmaster`；展示名 = SiYuanMaster / 思源大师；内核注册受控 MCP 工具并执行 Access Boundary + Safe Write Transaction。
 2. **Rust 工作区**：`core` / `siyuanmasterd` / `siyuanmaster`。
 3. **单一能力目录**：`catalog/capabilities.json`。
 
@@ -85,7 +85,7 @@
 
 ---
 
-## 2. 命名与品牌迁移（过渡期）
+## 2. 命名与技术身份（0.5.0）
 
 ### 2.1 矩阵
 
@@ -94,26 +94,26 @@
 | 品牌 slug / package 名 | `siyuanmaster` | `package.json` name |
 | 展示名 default | `SiYuanMaster` | 用户可见 |
 | 展示名 zh-CN | `思源大师` | 用户可见 |
-| **技术插件 ID**（`plugin.json` name） | **`siyuan-agent-access`** | **过渡期保留**，保障安装目录、petal 存储与原 16 工具全名不断 |
-| MCP 命名空间 | **仅** `plugin__siyuan_agent_access__*` | 由思源内核从技术 name 推导；单插件不能注册双原生命名空间 |
-| 插件存储目录 | `data/storage/petal/siyuan-agent-access/` | 本轮不自动迁移 |
-| Dock 类型键 | `siyuan-agent-access-dock` | 保持不变 |
+| **技术插件 ID**（`plugin.json` name） | **`siyuanmaster`** | **0.5.0 已切换**；旧安装路径与旧 MCP 全名失效 |
+| MCP 命名空间 | **仅** `plugin__siyuanmaster__*` | 由思源内核从技术 name 推导；单插件不能注册双原生命名空间 |
+| 插件存储目录 | `data/storage/petal/siyuanmaster/` | 首次加载自动复制旧 petal（新值优先、失败关闭；旧目录保留不删） |
+| Dock 类型键 | `siyuanmaster-dock` | 随技术 ID 切换（breaking） |
 | “仅首次”标记属性 | `custom-agent-access-tagged` | 保持不变 |
-| 版本 | `0.4.0` | package / plugin / catalog / Rust workspace 统一 |
+| 版本 | `0.5.0` | package / plugin / catalog / Rust workspace 统一 |
 
-### 2.2 为何不改技术 ID（本轮）
+### 2.2 0.5.0 技术 ID 切换（breaking）
 
-思源内核将 MCP 工具命名为 `plugin__<sanitize(plugin.json name)>__<tool>`（已在 v3.8.0-alpha.2 的 `plugin/api_mcp.go` 行为中核对）。若本轮把 `name` 改为 `siyuanmaster`：
+思源内核将 MCP 工具命名为 `plugin__<sanitize(plugin.json name)>__<tool>`（已在 v3.8.0-alpha.2 的 `plugin/api_mcp.go` 行为中核对）。0.5.0 已将 `plugin.json` 的 `name` 改为 `siyuanmaster`：
 
-1. 安装目录与 petal 路径变化，旧策略“看似丢失”；
-2. 原 16 个 `plugin__siyuan_agent_access__*` 工具名全部失效；
-3. **同一插件无法同时注册两个原生命名空间**。
+1. 安装目录变为 `data/plugins/siyuanmaster`，petal 变为 `data/storage/petal/siyuanmaster/`；
+2. 工具全名变为 `plugin__siyuanmaster__*`；旧 `plugin__siyuan_agent_access__*` **全部失效**，外部 Agent/Skill 配置必须更新；
+3. **同一插件无法同时注册两个原生命名空间**，故不做双命名空间兼容。
 
-因此本轮策略是：**品牌文案与 package 改为 siyuanmaster，技术 ID 保留**。未来切换技术 ID 必须走**双插件或迁移桥**发布闸；`src/migration.ts` 仅提供**纯决策**函数，**规格不得声称启动时已迁移**，**不得删除旧存储**。
+**旧数据迁移（已实现）：** `src/migration.ts` 在前端与 kernel 启动时运行幂等迁移：新 policy 始终优先；仅当新侧缺失时只读读取旧 petal 并复制到新 scoped storage；损坏/缺失则失败关闭到空 allowlist；新 audit 为空时才做有界 metadata-only 审计复制；写入 migration marker；**永不删除/改写旧目录**。外部 Agent 命名空间仍须手工更新。
 
 ### 2.3 工具集合
 
-19 个裸工具名 = 原 16 + `resolve_document` + `read_note_segments` + `edit_block`。全部只生成当前 `plugin__siyuan_agent_access__` 命名空间下的全名。
+19 个裸工具名 = 原 16 + `resolve_document` + `read_note_segments` + `edit_block`。全部只生成当前 `plugin__siyuanmaster__` 命名空间下的全名。
 
 ---
 
@@ -164,7 +164,7 @@
 ### 4.1 Access Boundary
 
 1. 策略：笔记本名单、操作决策、标签、安全策略（`safety.*`）。
-2. 入口：思源 `/mcp` 上注册的 `plugin__siyuan_agent_access__*` 工具；可选网关范围令牌入口。
+2. 入口：思源 `/mcp` 上注册的 `plugin__siyuanmaster__*` 工具；可选网关范围令牌入口。
 3. 审计：元数据 only。
 4. 默认拒绝。
 5. **当前权限边界（诚实）**：有效边界 = **笔记本决策继承到该笔记本下全部子孙文档/块**。文档级读写/只读/隐藏覆盖、最近祖先覆盖表**尚未接入 TS 插件**；Rust `core::perm` 仅有原语与单测，不得宣称插件已具备文档级隐私矩阵。
@@ -213,7 +213,7 @@ P0/P1 另强制：`snapshotBeforeWrite ≡ true`、`permissionInheritance ≡ tr
         │
         ▼
 思源内核 3.7+
-  └─ 插件 kernel.js（技术 ID: siyuan-agent-access）
+  └─ 插件 kernel.js（技术 ID: siyuanmaster）
        ├─ Access Boundary（策略/工具/审计）
        └─ Safe Write Transaction（update_note / edit_block）
 插件前端 index.js（Dock / 设置）
@@ -337,9 +337,9 @@ Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`me
 
 ## 15. 版本与交付物
 
-- 版本：0.4.0
+- 版本：0.5.0
 - 规格版本：1.2
-- 插件包：`package.zip`（技术目录名 `siyuan-agent-access`）
+- 插件包：`package.zip`（技术目录名 `siyuanmaster`）
 - 规格：本文档
 - 不提交密钥；`.gitignore` 含 `target/`、`.umadev/`、`output/`；保留 `Cargo.lock` 与生产规格
 - 交付边界声明：P0/P1 **不是** Bridge/Sisyphus 全量功能对等；营销与 README 不得声称“已吸收全部功能”

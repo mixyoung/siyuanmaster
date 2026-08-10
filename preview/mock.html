@@ -58,23 +58,23 @@
         color: #8c877f;
       }
 
-      .saa-settings {
+      .sym-settings {
         height: calc(100% - 42px);
         background: var(--b3-theme-background);
       }
 
-      .saa-settings__hero {
+      .sym-settings__hero {
         padding: 24px 30px 20px;
         background:
           linear-gradient(90deg, transparent 0 78%, rgba(209, 120, 24, 0.08)),
           var(--b3-theme-background);
       }
 
-      .saa-settings__hero h2 {
+      .sym-settings__hero h2 {
         font-size: 34px;
       }
 
-      .saa-settings__content {
+      .sym-settings__content {
         display: grid;
         grid-template-columns: 1.25fr 0.9fr;
         gap: 0 34px;
@@ -83,28 +83,28 @@
         overflow: hidden;
       }
 
-      .saa-settings__content .saa-section {
+      .sym-settings__content .sym-section {
         padding: 20px 0;
       }
 
-      .saa-settings__content .saa-section:nth-child(3) {
+      .sym-settings__content .sym-section:nth-child(3) {
         grid-column: 2;
         grid-row: 1 / span 2;
       }
 
-      .saa-notebook-list {
+      .sym-notebook-list {
         max-height: 210px;
       }
 
-      .saa-notebook-row {
+      .sym-notebook-row {
         min-height: 58px;
       }
 
-      .saa-permission-grid {
+      .sym-permission-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
-      .saa-tag-modes {
+      .sym-tag-modes {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
@@ -118,7 +118,7 @@
         background: #fffdf8;
       }
 
-      .saa-settings__footer {
+      .sym-settings__footer {
         min-height: 68px;
       }
 
@@ -145,123 +145,123 @@
         <span>Agent 访问控制</span>
         <span>思源笔记原生插件 · 本机策略工作台</span>
       </div>
-      <div class="saa-settings">
-        <header class="saa-settings__hero">
+      <div class="sym-settings">
+        <header class="sym-settings__hero">
           <div>
-            <p class="saa-kicker">POLICY WORKBENCH / 01</p>
+            <p class="sym-kicker">POLICY WORKBENCH / 01</p>
             <h2>决定 AI 能看见什么</h2>
             <p>选择访问边界、写入行为和标签策略。权限保存后立即生效。</p>
           </div>
-          <div class="saa-settings__seal">
+          <div class="sym-settings__seal">
             <span>LOCAL</span>
             <strong>TRUSTED</strong>
           </div>
         </header>
 
-        <main class="saa-settings__content">
-          <section class="saa-section">
-            <div class="saa-section__heading">
+        <main class="sym-settings__content">
+          <section class="sym-section">
+            <div class="sym-section__heading">
               <span>01</span>
               <div>
                 <h3>笔记本访问范围</h3>
                 <p>推荐使用允许名单；新建笔记本默认不可访问。</p>
               </div>
             </div>
-            <div class="saa-mode-grid">
-              <label class="saa-mode-card">
+            <div class="sym-mode-grid">
+              <label class="sym-mode-card">
                 <input type="radio" checked />
-                <span class="saa-mode-card__mark">A</span>
+                <span class="sym-mode-card__mark">A</span>
                 <strong>只允许选中的笔记本</strong>
                 <small>未勾选内容对插件工具不可见</small>
               </label>
-              <label class="saa-mode-card">
+              <label class="sym-mode-card">
                 <input type="radio" />
-                <span class="saa-mode-card__mark">B</span>
+                <span class="sym-mode-card__mark">B</span>
                 <strong>禁止选中的笔记本</strong>
                 <small>未勾选内容默认可以访问</small>
               </label>
             </div>
-            <div class="saa-effective">
+            <div class="sym-effective">
               <strong>2</strong>
               <span>个笔记本最终可访问 · 只允许选中的笔记本</span>
             </div>
-            <div class="saa-notebook-list">
-              <label class="saa-notebook-row">
+            <div class="sym-notebook-list">
+              <label class="sym-notebook-row">
                 <input type="checkbox" checked />
-                <span class="saa-notebook-row__index">01</span>
-                <span class="saa-notebook-row__body">
+                <span class="sym-notebook-row__index">01</span>
+                <span class="sym-notebook-row__body">
                   <strong>研究笔记</strong>
                   <code>20260729000001-demo001</code>
                 </span>
-                <span class="saa-access-chip saa-access-chip--allow">可访问</span>
+                <span class="sym-access-chip sym-access-chip--allow">可访问</span>
               </label>
-              <label class="saa-notebook-row">
+              <label class="sym-notebook-row">
                 <input type="checkbox" checked />
-                <span class="saa-notebook-row__index">02</span>
-                <span class="saa-notebook-row__body">
+                <span class="sym-notebook-row__index">02</span>
+                <span class="sym-notebook-row__body">
                   <strong>项目日志</strong>
                   <code>20260729000002-demo002</code>
                 </span>
-                <span class="saa-access-chip saa-access-chip--allow">可访问</span>
+                <span class="sym-access-chip sym-access-chip--allow">可访问</span>
               </label>
-              <label class="saa-notebook-row">
+              <label class="sym-notebook-row">
                 <input type="checkbox" />
-                <span class="saa-notebook-row__index">03</span>
-                <span class="saa-notebook-row__body">
+                <span class="sym-notebook-row__index">03</span>
+                <span class="sym-notebook-row__body">
                   <strong>私人账本</strong>
                   <code>20260729000003-demo003</code>
                 </span>
-                <span class="saa-access-chip saa-access-chip--deny">已拒绝</span>
+                <span class="sym-access-chip sym-access-chip--deny">已拒绝</span>
               </label>
             </div>
           </section>
 
-          <section class="saa-section">
-            <div class="saa-section__heading">
+          <section class="sym-section">
+            <div class="sym-section__heading">
               <span>02</span>
               <div>
                 <h3>Agent 操作权限</h3>
                 <p>结构变更先生成一次性预演令牌，再按策略确认执行。</p>
               </div>
             </div>
-            <div class="saa-permission-grid">
-              <label class="saa-permission-row"><span><strong>搜索</strong><small>查找匹配笔记</small></span><select class="b3-select"><option>允许</option></select></label>
-              <label class="saa-permission-row"><span><strong>读取</strong><small>读取 Markdown</small></span><select class="b3-select"><option>允许</option></select></label>
-              <label class="saa-permission-row"><span><strong>修改</strong><small>替换文档正文</small></span><select class="b3-select"><option>需确认</option></select></label>
-              <label class="saa-permission-row"><span><strong>重命名</strong><small>预演后修改文档标题</small></span><select class="b3-select"><option>需确认</option></select></label>
-              <label class="saa-permission-row"><span><strong>移动</strong><small>预演后移动整棵文档树</small></span><select class="b3-select"><option>需确认</option></select></label>
-              <label class="saa-permission-row"><span><strong>跨笔记本移动</strong><small>源和目标均需授权</small></span><select class="b3-select"><option>禁止</option></select></label>
-              <label class="saa-permission-row"><span><strong>删除</strong><small>删除整篇文档</small></span><select class="b3-select"><option>禁止</option></select></label>
+            <div class="sym-permission-grid">
+              <label class="sym-permission-row"><span><strong>搜索</strong><small>查找匹配笔记</small></span><select class="b3-select"><option>允许</option></select></label>
+              <label class="sym-permission-row"><span><strong>读取</strong><small>读取 Markdown</small></span><select class="b3-select"><option>允许</option></select></label>
+              <label class="sym-permission-row"><span><strong>修改</strong><small>替换文档正文</small></span><select class="b3-select"><option>需确认</option></select></label>
+              <label class="sym-permission-row"><span><strong>重命名</strong><small>预演后修改文档标题</small></span><select class="b3-select"><option>需确认</option></select></label>
+              <label class="sym-permission-row"><span><strong>移动</strong><small>预演后移动整棵文档树</small></span><select class="b3-select"><option>需确认</option></select></label>
+              <label class="sym-permission-row"><span><strong>跨笔记本移动</strong><small>源和目标均需授权</small></span><select class="b3-select"><option>禁止</option></select></label>
+              <label class="sym-permission-row"><span><strong>删除</strong><small>删除整篇文档</small></span><select class="b3-select"><option>禁止</option></select></label>
             </div>
           </section>
 
-          <section class="saa-section">
-            <div class="saa-section__heading">
+          <section class="sym-section">
+            <div class="sym-section__heading">
               <span>03</span>
               <div>
                 <h3>标签策略</h3>
                 <p>没有明确选择时不强制添加任何固定标签。</p>
               </div>
             </div>
-            <div class="saa-tag-modes">
+            <div class="sym-tag-modes">
               <label><input type="radio" /><strong>不添加</strong><span>完全保持原标签</span></label>
               <label><input type="radio" checked /><strong>每次询问</strong><span>生成候选后等待确认</span></label>
               <label><input type="radio" /><strong>每次添加</strong><span>按当前规则自动应用</span></label>
               <label><input type="radio" /><strong>仅首次</strong><span>每篇文档只应用一次</span></label>
             </div>
-            <div class="saa-field-grid">
-              <label class="saa-field saa-field--wide">
+            <div class="sym-field-grid">
+              <label class="sym-field sym-field--wide">
                 <span>固定标签</span>
                 <input class="b3-text-field" value="AI整理, 待复核" />
                 <small>写入时先读取现有标签，再追加并去重。</small>
               </label>
-              <label class="saa-switch-field">
+              <label class="sym-switch-field">
                 <span><strong>AI 总结标签</strong><small>根据最终文档内容生成候选</small></span>
                 <input type="checkbox" checked />
               </label>
             </div>
-            <section class="saa-section saa-section--risk">
-              <div class="saa-section__heading">
+            <section class="sym-section sym-section--risk">
+              <div class="sym-section__heading">
                 <span>!</span>
                 <div>
                   <h3>已接受的安全边界</h3>
@@ -272,7 +272,7 @@
           </section>
         </main>
 
-        <footer class="saa-settings__footer">
+        <footer class="sym-settings__footer">
           <span>安全默认：未选中的笔记本不可访问</span>
           <div>
             <button class="b3-button">取消</button>

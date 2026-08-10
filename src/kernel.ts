@@ -5,8 +5,16 @@ import {
   DEFAULT_POLICY,
   isNotebookAllowed,
   normalizePolicy,
-  POLICY_STORAGE_KEY,
 } from "./config";
+import {
+  isAlreadyTaggedOnce,
+  LEGACY_TECHNICAL_ID,
+  legacyPetalFilePath,
+  parseWorkspaceJsonPayload,
+  runStorageMigration,
+  TAGGED_ONCE_ATTR,
+  type MigrationStorageIO,
+} from "./migration";
 import {
   blockDisplayText,
   buildOutline,
@@ -60,7 +68,6 @@ import {
   runWriteTransaction,
 } from "./write-transaction";
 
-const TAGGED_ONCE_ATTR = "custom-agent-access-tagged";
 const MAX_MARKDOWN_LENGTH = 1_000_000;
 const STRUCTURE_VERIFY_ATTEMPTS = 8;
 const STRUCTURE_VERIFY_DELAY_MS = 125;
@@ -228,7 +235,7 @@ function taggingProperty(): Record<string, unknown> {
   };
 }
 
-class AgentAccessKernelPlugin {
+class SiYuanMasterKernelPlugin {
   private readonly api: kernel.ISiyuan = siyuan;
   private readonly client = new KernelApiClient(this.api);
   private readonly audit = new AuditStore(
@@ -255,12 +262,12 @@ class AgentAccessKernelPlugin {
         await this.reloadPolicy();
         return this.status();
       },
-      "Reload the Agent Access policy from plugin-private storage.",
+      "Reload the SiYuanMaster policy from plugin-private storage.",
     );
     await this.api.rpc.bind(
       "getStatus",
       async () => this.status(),
-      "Return Agent Access kernel status.",
+      "Return SiYuanMaster kernel status.",
     );
 
     await this.registerPolicyTool();
@@ -284,7 +291,7 @@ class AgentAccessKernelPlugin {
     await this.registerAuditTool();
 
     await this.api.logger.info(
-      `SiYuanMaster loaded with ${this.registeredTools.length} MCP tools (technical id retained as siyuan-agent-access)`,
+      `SiYuanMaster loaded with ${this.registeredTools.length} MCP tools (technical id siyuanmaster)`,
     );
   }
 
@@ -299,8 +306,13 @@ class AgentAccessKernelPlugin {
 
   private async reloadPolicy(): Promise<void> {
     try {
-      const stored = await this.api.storage.get(POLICY_STORAGE_KEY);
-      this.policy = normalizePolicy(await stored.json());
+      const result = await runStorageMigration(this.createMigrationIO());
+      this.policy = result.policy;
+      if (result.policyCopied || result.auditCopied) {
+        await this.api.logger.info(
+          `SiYuanMaster migrated storage from ${LEGACY_TECHNICAL_ID} (policyCopied=${result.policyCopied}, auditCopied=${result.auditCopied})`,
+        );
+      }
     } catch (error) {
       this.policy = clonePolicy(DEFAULT_POLICY);
       await this.api.logger.warn(
@@ -310,11 +322,34 @@ class AgentAccessKernelPlugin {
     }
   }
 
+  private createMigrationIO(): MigrationStorageIO {
+    return {
+      readCurrent: async (key) => {
+        try {
+          const stored = await this.api.storage.get(key);
+          return await stored.json();
+        } catch {
+          return undefined;
+        }
+      },
+      writeCurrent: async (key, value) => {
+        const content =
+          typeof value === "string" ? value : JSON.stringify(value);
+        await this.api.storage.put(key, content);
+      },
+      readLegacy: async (key) => {
+        const path = legacyPetalFilePath(key);
+        const raw = await this.client.readWorkspaceJson(path);
+        return parseWorkspaceJsonPayload(raw);
+      },
+    };
+  }
+
   private status(): Record<string, unknown> {
     return {
       ready: true,
       product: "siyuanmaster",
-      technicalId: "siyuan-agent-access",
+      technicalId: "siyuanmaster",
       toolCount: this.registeredTools.length,
       accessMode: this.policy.access.mode,
       selectedNotebookCount:
@@ -395,7 +430,7 @@ class AgentAccessKernelPlugin {
     if (!isNotebookAllowed(notebookId, this.policy)) {
       throw new PolicyViolation(
         "notebook_denied",
-        "The requested notebook is outside the active Agent Access policy",
+        "The requested notebook is outside the active SiYuanMaster policy",
       );
     }
     return notebook;
@@ -576,7 +611,7 @@ class AgentAccessKernelPlugin {
     return {
       attrs,
       tags: splitStoredTags(attrs.tags),
-      alreadyTagged: attrs[TAGGED_ONCE_ATTR] === "true",
+      alreadyTagged: isAlreadyTaggedOnce(attrs),
     };
   }
 
@@ -635,7 +670,7 @@ class AgentAccessKernelPlugin {
       "get_policy",
       genericToolConfig(
         "Get SiYuanMaster Access Boundary Policy",
-        "Call this before any SiYuan operation. Returns the notebook boundary, operation decisions, safety policy (snapshot, reference protection, long-document limits, block edit), optional tagging policy, and the accepted native MCP security boundary. Tool names remain under plugin__siyuan_agent_access__* while the technical plugin id is retained.",
+        "Call this before any SiYuan operation. Returns the notebook boundary, operation decisions, safety policy (snapshot, reference protection, long-document limits, block edit), optional tagging policy, and the accepted native MCP security boundary. Tool names are under plugin__siyuanmaster__* (technical plugin id siyuanmaster).",
         {
           type: "object",
           properties: {},
@@ -647,9 +682,9 @@ class AgentAccessKernelPlugin {
         product: {
           brand: "siyuanmaster",
           displayName: { default: "SiYuanMaster", "zh-CN": "思源大师" },
-          technicalId: "siyuan-agent-access",
-          version: "0.4.0",
-          namespace: "plugin__siyuan_agent_access__",
+          technicalId: "siyuanmaster",
+          version: "0.5.0",
+          namespace: "plugin__siyuanmaster__",
         },
         access: this.policy.access,
         operations: this.policy.operations,
@@ -673,7 +708,7 @@ class AgentAccessKernelPlugin {
           "Use search_notes / read_note / read_note_segments for retrieval.",
           "For decisions marked confirm, obtain user approval before retrying with confirmed=true.",
           "In tag mode ask, pass tagging.decision='add' or 'skip' for each write.",
-          "Use only plugin__siyuan_agent_access__* tools when policy enforcement is required.",
+          "Use only plugin__siyuanmaster__* tools when policy enforcement is required.",
         ],
         acceptedRisk:
           "SiYuan native /mcp uses administrator-level authentication and also exposes native high-privilege tools outside this plugin's access boundary.",
@@ -2570,7 +2605,7 @@ class AgentAccessKernelPlugin {
     await this.registerTool(
       "get_audit_log",
       genericToolConfig(
-        "Get Agent Access Audit Log",
+        "Get SiYuanMaster Audit Log",
         "Returns recent policy-aware plugin operations. Content is never stored in the audit log; only metadata, outcomes, lengths, and tag counts are recorded.",
         {
           type: "object",
@@ -2600,4 +2635,4 @@ class AgentAccessKernelPlugin {
   }
 }
 
-new AgentAccessKernelPlugin();
+new SiYuanMasterKernelPlugin();

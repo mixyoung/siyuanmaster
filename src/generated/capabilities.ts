@@ -5,15 +5,15 @@
 
 export const CATALOG_SCHEMA_VERSION = 1;
 export const PRODUCT_ID = "siyuanmaster";
-export const TECHNICAL_ID = "siyuan-agent-access";
-export const PRODUCT_VERSION = "0.4.0";
+export const TECHNICAL_ID = "siyuanmaster";
+export const PRODUCT_VERSION = "0.5.0";
 export const PRODUCT_DISPLAY_NAME_DEFAULT = "SiYuanMaster";
 export const PRODUCT_DISPLAY_NAME_ZH_CN = "思源大师";
 export const MIN_APP_VERSION = "3.7.0";
 
 // The MCP namespace is derived from the current technical ID by the SiYuan
 // kernel. A single plugin cannot register a second native namespace.
-export const PLUGIN_NAMESPACE = "plugin__siyuan_agent_access__";
+export const PLUGIN_NAMESPACE = "plugin__siyuanmaster__";
 export const GATEWAY_NAMESPACE = "siyuanmaster";
 
 export const TOOL_NAMES = ["get_policy","list_accessible_notebooks","list_document_tree","search_notes","read_note","resolve_document","read_note_segments","create_note","append_note","update_note","edit_block","rename_note","move_note","delete_note","suggest_tags","apply_tags","prepare_summary","save_memory","get_audit_log"] as const;
@@ -21,7 +21,7 @@ export const READ_ONLY_TOOLS = ["get_policy","list_accessible_notebooks","list_d
 export const CONFIRM_DEFAULT_TOOLS = ["update_note","edit_block","rename_note","move_note","delete_note"] as const;
 export const TOOL_CATEGORIES: Record<string, string> = {"get_policy":"policy","list_accessible_notebooks":"notebook","list_document_tree":"tree","search_notes":"search","read_note":"read","resolve_document":"read","read_note_segments":"read","create_note":"write","append_note":"write","update_note":"write","edit_block":"block","rename_note":"structure","move_note":"structure","delete_note":"write","suggest_tags":"tag","apply_tags":"tag","prepare_summary":"read","save_memory":"write","get_audit_log":"audit"};
 // Fully-qualified names under the current technical ID namespace.
-export const PLUGIN_TOOL_NAMES = ["plugin__siyuan_agent_access__get_policy","plugin__siyuan_agent_access__list_accessible_notebooks","plugin__siyuan_agent_access__list_document_tree","plugin__siyuan_agent_access__search_notes","plugin__siyuan_agent_access__read_note","plugin__siyuan_agent_access__resolve_document","plugin__siyuan_agent_access__read_note_segments","plugin__siyuan_agent_access__create_note","plugin__siyuan_agent_access__append_note","plugin__siyuan_agent_access__update_note","plugin__siyuan_agent_access__edit_block","plugin__siyuan_agent_access__rename_note","plugin__siyuan_agent_access__move_note","plugin__siyuan_agent_access__delete_note","plugin__siyuan_agent_access__suggest_tags","plugin__siyuan_agent_access__apply_tags","plugin__siyuan_agent_access__prepare_summary","plugin__siyuan_agent_access__save_memory","plugin__siyuan_agent_access__get_audit_log"] as const;
+export const PLUGIN_TOOL_NAMES = ["plugin__siyuanmaster__get_policy","plugin__siyuanmaster__list_accessible_notebooks","plugin__siyuanmaster__list_document_tree","plugin__siyuanmaster__search_notes","plugin__siyuanmaster__read_note","plugin__siyuanmaster__resolve_document","plugin__siyuanmaster__read_note_segments","plugin__siyuanmaster__create_note","plugin__siyuanmaster__append_note","plugin__siyuanmaster__update_note","plugin__siyuanmaster__edit_block","plugin__siyuanmaster__rename_note","plugin__siyuanmaster__move_note","plugin__siyuanmaster__delete_note","plugin__siyuanmaster__suggest_tags","plugin__siyuanmaster__apply_tags","plugin__siyuanmaster__prepare_summary","plugin__siyuanmaster__save_memory","plugin__siyuanmaster__get_audit_log"] as const;
 export const ORIGINAL_TOOL_COUNT = 16;
 
 export const GATEWAY_ENDPOINTS = [{"path":"/healthz","method":"GET","auth":"none","audited":false},{"path":"/v1/capabilities","method":"GET","auth":"none","audited":false},{"path":"/v1/token/verify","method":"POST","auth":"none","audited":true},{"path":"/v1/audit","method":"GET","auth":"scope:audit:read","audited":false},{"path":"/v1/txn/preview","method":"POST","auth":"scope:txn:write","audited":true},{"path":"/v1/txn/confirm","method":"POST","auth":"scope:txn:write","audited":true}] as const;
