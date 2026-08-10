@@ -8,7 +8,11 @@
     "check:catalog": "node scripts/check-capabilities.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "pnpm run generate && pnpm run check:catalog && pnpm run typecheck && pnpm run test && node scripts/build.mjs"
+    "smoke:mcp": "node scripts/mcp-smoke.mjs",
+    "smoke:mcp:write": "node scripts/mcp-write-smoke.mjs",
+    "dev:local": "pwsh -NoProfile -File scripts/dev-local.ps1",
+    "build:package": "node scripts/build.mjs",
+    "build": "pnpm run generate && pnpm run check:catalog && pnpm run typecheck && pnpm run build:package && pnpm run test"
   },
   "devDependencies": {
     "archiver": "^7.0.1",

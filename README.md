@@ -129,11 +129,83 @@ These are optional local helpers. They do not replace the TypeScript plugin path
 ## Development and build
 
 ```bash
-pnpm build          # generate catalog, freshness check, typecheck, vitest, package
+pnpm build          # generate → check → typecheck → build:package → test
+pnpm build:package  # esbuild + dist/ + package.zip only
 cargo fmt --check
 cargo clippy --workspace -- -D warnings
 cargo test --workspace
 ```
+
+### MCP discovery smoke (optional)
+
+Requires a running local SiYuan and `SIYUAN_API_TOKEN`. Loopback only; the token is never printed. Validates the 19 `plugin__siyuanmaster__*` tools against `catalog/capabilities.json` and asserts zero legacy `plugin__siyuan_agent_access__*` names.
+
+- **Default discovery:** zero note writes (initialize → session → tools/list + catalog match only).
+- **`--read-smoke`:** sequentially calls the two read-only tools `get_policy` and `list_accessible_notebooks`; prints only `isError`, whether `structuredContent` is present, top-level keys, and top-level array field names/counts — never array elements or values. These calls may write **metadata-only audit** entries.
+- **Token:** the script always sends `Authorization: Token …`. On SiYuan `3.8.0-alpha.2` live observation, requests without `Authorization` may still succeed while a wrong token returns `401`. This script does **not** claim that native authentication is required.
+
+```bash
+pnpm smoke:mcp
+pnpm smoke:mcp -- --read-smoke   # also call get_policy + list_accessible_notebooks (read-only; safe summary only)
+```
+
+### MCP destructive write smoke (optional, explicit opt-in)
+
+**Separate from discovery/read smoke.** Default `pnpm smoke:mcp` / `--read-smoke` never create, update, or delete notes. This write smoke is **destructive** and will not run without both a disposable notebook id and an explicit acknowledgement flag.
+
+Preconditions:
+
+- A **disposable allowed notebook** whose id you pass with `--notebook-id` (only that notebook is targeted).
+- Plugin policy: `create` / `update` / `read` / `delete` must **not** be `deny`. Delete defaults to `deny` — set delete to **`allow` or `confirm`** so preflight permits cleanup; otherwise the smoke **refuses create**.
+- `SIYUAN_API_TOKEN` set (never printed). Loopback MCP URL only.
+- Explicit acknowledgement: **`--confirm-destructive-smoke`** (required).
+
+Lifecycle (plugin tools only; no native API / bypass):
+`get_policy` → `list_accessible_notebooks` (preflight) → `create_note` → readiness `read_note` (bounded poll) → `update_note` → `read_note` → `delete_note`.
+After create, the smoke waits up to a **bounded window** (~5s: 20 × 250ms) for SiYuan index visibility via plugin **`read_note` only** (`confirmed=true`). Only those readiness reads may be retried; **create / update / delete are never retried**. `{ok:false}` is treated as not-yet-visible until the bound; malformed MCP/`structuredContent` is a hard failure.
+Success leaves **no** smoke note. **Known-ID** post-create failures (validated SiYuan `documentId`) get **exactly one** plugin `delete_note` cleanup attempt; if cleanup fails, a note **may remain** and the error prints **only** that validated `documentId` (no title/body/token/session). **Unknown create outcome** (timeout, missing/malformed envelope, `{ok:false}`, or missing/invalid `documentId`) cannot run cleanup safely — the error reports **`artifactPossiblyCreated=true`** and that manual inspection is required in the selected disposable notebook (**no** `documentId` / title / body / token / session).
+
+```bash
+pnpm smoke:mcp:write -- --notebook-id <DISPOSABLE_NOTEBOOK_ID> --confirm-destructive-smoke
+# optional: --url http://127.0.0.1:6806/mcp
+```
+
+### Local Windows loop (`dev:local`)
+
+One-shot **build → safe install → SiYuan reload → MCP smoke** for desktop development (PowerShell 7+). Install target is always:
+
+```text
+<Workspace>/data/plugins/siyuanmaster
+```
+
+```bash
+pnpm dev:local -- -Workspace "D:\path\to\siyuan-workspace"
+pnpm dev:local -- -Workspace "D:\path\to\siyuan-workspace" -ReadSmoke
+pnpm dev:local -- -Workspace "D:\path\to\siyuan-workspace" -WhatIf
+pnpm dev:local -- -Workspace "D:\path\to\siyuan-workspace" -SkipBuild -SkipReload   # install only; port must be closed unless overridden
+```
+
+| Flag | Behavior |
+|---|---|
+| `-Workspace` | **Required.** SiYuan workspace root (absolute path recommended). |
+| `-SkipBuild` | Use existing `dist/` (skip `pnpm build`). |
+| `-SkipReload` | Install only; **no** `setPetalEnabled`, **no** MCP smoke. Prints `manual restart required`. By default **refuses** if the `-ApiBaseUrl` TCP port is reachable (a running SiYuan would keep old plugin bits). Use only when SiYuan is not running or you will restart manually. Default path always reloads + smokes. |
+| `-AllowRunningWithoutReload` | **Override for `-SkipReload` only.** Allows install while the API port is open. **Risk:** the running instance may continue serving the previous plugin until a real reload/restart. Prefer leaving the port closed instead of using this flag. |
+| `-ReadSmoke` | After reload, run `pnpm smoke:mcp --url <ApiBaseUrl-origin>/mcp --read-smoke` (may write **metadata-only** audit entries). |
+| `-WhatIf` | Validate `dist/` + paths and print the plan only — no build, API, TCP, mkdir, move, or env mutation. Does not print credentials. |
+| `-ApiBaseUrl` | Default `http://127.0.0.1:6806`. **Strict origin only** (no userinfo/query/fragment; path empty or `/`). Loopback only (`localhost` / `127.0.0.0/8` / `::1`). |
+
+**Safety / recovery**
+
+- Requires a complete `dist/` (`index.js`, `index.css`, `kernel.js`, `plugin.json`, READMEs, icons, `i18n/`, `agent-skill/`); recursively refuses reparse points under `dist/` and staging.
+- Stages under `data/plugins/.siyuanmaster-staging-<guid>/`, then **Move-Item** swaps into the install target (never overwrite-copy onto an existing target; never recursive-delete plugin/backup dirs).
+- Prior install is moved to `data/plugins/.siyuanmaster-dev-backups/<timestamp-guid>/siyuanmaster` only when its `plugin.json` `name` is exactly `siyuanmaster` (ordinary same-named dirs are refused). No empty backup root on fresh install.
+- Token is read from `<Workspace>/conf/conf.json` → `api.token` into the process env only (never printed or written). Restored in `finally`.
+- Before disable/swap, default reload path calls `POST /api/system/getWorkspaceInfo {}` on the same origin+token and requires `data.workspaceDir` to match `-Workspace` (Windows: case-insensitive after normalization). Mismatch fails closed with no directory moves.
+- Reload uses `POST /api/petal/setPetalEnabled` with `app=siyuanmaster-dev-local-<guid>`. Here `app` is only the SiYuan **excludeApp** value for that call — it is **not** a login or caller identity. Because it does not match a real frontend app id, official `PushReloadPlugin` still broadcasts to real frontends.
+- MCP smoke always passes an explicit `--url <ApiBaseUrl-origin>/mcp` (never inherits `SIYUAN_MCP_URL` or a default host from the ambient environment for this loop).
+- On failure after swap: best-effort disable new plugin, move failed target to `data/plugins/.siyuanmaster-failed-<guid>`, restore backup when a prior install existed, re-enable previous plugin **only** when identity is certain (`backupRestored`, or never moved/replaced). If quarantine fails and backup is not restored, re-enable is forbidden and recovery is marked incomplete. If there was no prior install, restore is **not** fabricated.
+- Does not modify auth config.
 
 - Node `>= 24` (see `package.json` engines)
 - Capability source of truth: `catalog/capabilities.json` → `src/generated/capabilities.ts`

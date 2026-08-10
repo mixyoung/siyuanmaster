@@ -129,11 +129,83 @@ Safe Write Transaction（`update_note`、`edit_block`）：写前快照（失败
 ## 开发与构建
 
 ```bash
-pnpm build          # 生成目录、新鲜度检查、类型检查、vitest、打包
+pnpm build          # generate → check → typecheck → build:package → test
+pnpm build:package  # 仅 esbuild + dist/ + package.zip
 cargo fmt --check
 cargo clippy --workspace -- -D warnings
 cargo test --workspace
 ```
+
+### MCP 发现冒烟（可选）
+
+需要本机思源已运行且设置 `SIYUAN_API_TOKEN`。仅 loopback；Token 从不打印。按 `catalog/capabilities.json` 精确校验 19 个 `plugin__siyuanmaster__*` 工具，并断言旧命名空间 `plugin__siyuan_agent_access__*` 为 0。
+
+- **默认 discovery：** 零笔记写入（仅 initialize → session → tools/list + 目录精确匹配）。
+- **`--read-smoke`：** 依次调用两个只读工具 `get_policy` 与 `list_accessible_notebooks`；仅输出 `isError`、`structuredContent` 是否存在、顶层 key，以及顶层数组字段的名称与计数——绝不输出数组元素/值。这两次调用可能写入**仅元数据**审计记录。
+- **Token：** 脚本始终发送 `Authorization: Token …`。在思源 `3.8.0-alpha.2` 实机观察到：无 `Authorization` 也可能成功，错误 Token 返回 `401`。本脚本**不宣称**原生认证为必需。
+
+```bash
+pnpm smoke:mcp
+pnpm smoke:mcp -- --read-smoke   # 额外调用 get_policy + list_accessible_notebooks（只读；仅安全摘要）
+```
+
+### MCP 破坏性写入冒烟（可选，显式确认）
+
+**与发现/只读冒烟分开。** 默认 `pnpm smoke:mcp` / `--read-smoke` **不会**创建、更新或删除笔记。本写入冒烟为**破坏性**操作：未同时提供可丢弃笔记本 id 与显式确认标志时**不会运行**。
+
+前置条件：
+
+- 一个**可丢弃且策略允许**的笔记本，通过 `--notebook-id` 传入其 id（仅操作该笔记本）。
+- 插件策略：`create` / `update` / `read` / `delete` 均**不能**为 `deny`。`delete` 默认 `deny` — 须将 delete 设为 **`allow` 或 `confirm`**，以便预检允许清理；否则冒烟在 create 前**拒绝执行**。
+- 已设置 `SIYUAN_API_TOKEN`（永不打印）。仅 loopback MCP URL。
+- 显式确认：**`--confirm-destructive-smoke`**（必填）。
+
+生命周期（仅插件工具；无原生 API / 旁路）：
+`get_policy` → `list_accessible_notebooks`（预检）→ `create_note` → 就绪 `read_note`（有界轮询）→ `update_note` → `read_note` → `delete_note`。
+create 之后，冒烟会在**有界时间窗**内（约 5 秒：20 × 250ms）仅通过插件 **`read_note`**（`confirmed=true`）等待思源索引可见。仅这些就绪读可重试；**create / update / delete 绝不重试**。`{ok:false}` 在窗口内视为尚未可见；畸形 MCP/`structuredContent` 为硬失败。
+成功后**不留下**冒烟笔记。**已知 ID** 的 create 后失败（`documentId` 通过思源 id 校验）会尝试**恰好一次**插件 `delete_note` 清理；若清理失败，可能**留下一篇**笔记，错误信息**仅**打印该已校验的 `documentId`（不含标题/正文/Token/会话）。**未知 create 结果**（超时、envelope 缺失/畸形、`{ok:false}`、或 `documentId` 缺失/非法）无法安全清理——错误会报告 **`artifactPossiblyCreated=true`**，并提示需在所选可丢弃笔记本中人工检查（**不含** `documentId` / 标题 / 正文 / Token / 会话）。
+
+```bash
+pnpm smoke:mcp:write -- --notebook-id <可丢弃笔记本ID> --confirm-destructive-smoke
+# 可选: --url http://127.0.0.1:6806/mcp
+```
+
+### Windows 一键本地循环（`dev:local`）
+
+桌面端开发一键流程：**构建 → 安全安装 → 思源重载 → MCP 冒烟**（需 PowerShell 7+）。安装目标固定为：
+
+```text
+<工作空间>/data/plugins/siyuanmaster
+```
+
+```bash
+pnpm dev:local -- -Workspace "D:\path\to\siyuan-workspace"
+pnpm dev:local -- -Workspace "D:\path\to\siyuan-workspace" -ReadSmoke
+pnpm dev:local -- -Workspace "D:\path\to\siyuan-workspace" -WhatIf
+pnpm dev:local -- -Workspace "D:\path\to\siyuan-workspace" -SkipBuild -SkipReload   # 仅安装；端口须关闭，除非显式覆盖
+```
+
+| 参数 | 行为 |
+|---|---|
+| `-Workspace` | **必填。** 思源工作空间根目录（建议绝对路径）。 |
+| `-SkipBuild` | 使用已有 `dist/`（跳过 `pnpm build`）。 |
+| `-SkipReload` | 仅安装；**不**调用 `setPetalEnabled`，**不**跑 MCP smoke。输出 `manual restart required`。默认若 `-ApiBaseUrl` TCP 端口可达则**拒绝安装**（运行中的思源会继续用旧插件文件）。仅在思源未运行或你将手动重启时使用。默认路径始终 reload + smoke。 |
+| `-AllowRunningWithoutReload` | **仅配合 `-SkipReload`。** 允许在 API 端口可达时仍安装。**风险：** 运行中的思源实例可能继续提供旧插件，直到真正 reload/重启。优先保证端口关闭，而不是依赖此覆盖开关。 |
+| `-ReadSmoke` | 重载后执行 `pnpm smoke:mcp --url <ApiBaseUrl-origin>/mcp --read-smoke`（可能写入**仅元数据**审计记录）。 |
+| `-WhatIf` | 只校验 `dist/` 与路径并打印计划——不 build、不调 API、不做 TCP、不建目录、不移动、不改环境变量。不打印凭据。 |
+| `-ApiBaseUrl` | 默认 `http://127.0.0.1:6806`。**必须是严格 origin**（无 userinfo/query/fragment；path 只能为空或 `/`）。仅 loopback（`localhost` / `127.0.0.0/8` / `::1`）。 |
+
+**安全与失败恢复**
+
+- 要求完整 `dist/`（`index.js`、`index.css`、`kernel.js`、`plugin.json`、README、图标、`i18n/`、`agent-skill/`）；对 `dist/` 与 staging 递归拒绝 reparse point。
+- 先落到 `data/plugins/.siyuanmaster-staging-<guid>/`，再用 **Move-Item** 交换进正式目标（禁止覆盖式 Copy-Item 到已存在目标；禁止递归删除插件/备份目录）。
+- 旧安装移到 `data/plugins/.siyuanmaster-dev-backups/<timestamp-guid>/siyuanmaster`，且仅当其 `plugin.json` 的 `name` 恰好为 `siyuanmaster`（拒绝把普通同名目录当备份）。无旧安装时不创建空 backup 根目录。
+- Token 仅从 `<工作空间>/conf/conf.json` 的 `api.token` 读入当前进程环境变量（不打印、不写文件）；`finally` 中恢复调用方原值。
+- 默认 reload 路径在 disable/swap **之前**，用同一 origin+token 调用 `POST /api/system/getWorkspaceInfo {}`，要求 `data.workspaceDir` 与 `-Workspace` 一致（Windows 规范化后大小写不敏感）。不一致则固定失败且不做目录移动。
+- 重载调用 `POST /api/petal/setPetalEnabled`，`app=siyuanmaster-dev-local-<guid>`。此处 `app` **只**是该次调用的 **excludeApp** 值，**不是**登录/调用方身份；因与真实前端 app id 不匹配，官方 `PushReloadPlugin` 仍会广播到真实前端。
+- MCP smoke 始终显式传入 `--url <ApiBaseUrl-origin>/mcp`（本循环不继承 `SIYUAN_MCP_URL` 或环境默认 6806）。
+- 交换后失败：尽力禁用新插件，将失败目标移到 `data/plugins/.siyuanmaster-failed-<guid>`，若原先有安装则恢复 backup，且**仅在身份确定时**重新启用旧插件（`backupRestored`，或从未移动/替换）。若新 target 隔离失败且 backup 未恢复，则禁止 enable 并标记 recover incomplete。若原先不存在则**不伪造**恢复。
+- 不修改认证配置。
 
 - Node `>= 24`（见 `package.json` engines）
 - 能力目录源：`catalog/capabilities.json` → `src/generated/capabilities.ts`
