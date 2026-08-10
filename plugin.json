@@ -2,7 +2,7 @@
   "name": "siyuan-agent-access",
   "author": "dnolin",
   "url": "",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "minAppVersion": "3.7.0",
   "kernels": [
     "all"
@@ -16,12 +16,12 @@
   ],
   "disabledInPublish": true,
   "displayName": {
-    "default": "Agent Access",
-    "zh-CN": "Agent 访问控制"
+    "default": "SiYuanMaster",
+    "zh-CN": "思源大师"
   },
   "description": {
-    "default": "Policy-aware note access and MCP tools for trusted local agents.",
-    "zh-CN": "为可信本机 Agent 提供笔记本范围控制、标签策略和安全结构变更 MCP 工具。"
+    "default": "SiYuanMaster: policy-aware note access and safe write tools for trusted local agents.",
+    "zh-CN": "思源大师：为可信本机 Agent 提供笔记本范围控制、安全写入与受控 MCP 工具。"
   },
   "readme": {
     "default": "README.md",
@@ -31,6 +31,8 @@
     "MCP",
     "AI",
     "Agent",
+    "SiYuanMaster",
+    "思源大师",
     "访问控制",
     "标签"
   ]

@@ -199,11 +199,104 @@ export class KernelApiClient {
     documentId: string,
     markdown: string,
   ): Promise<void> {
+    await this.updateBlockMarkdown(documentId, markdown);
+  }
+
+  /** Updates a single block (or whole-document root) via Kernel API only. */
+  async updateBlockMarkdown(
+    blockId: string,
+    markdown: string,
+  ): Promise<void> {
     await this.post<unknown>("/api/block/updateBlock", {
       dataType: "markdown",
       data: markdown,
-      id: assertSiyuanId(documentId, "documentId"),
+      id: assertSiyuanId(blockId, "blockId"),
     });
+  }
+
+  /** Reads a block's kramdown/markdown via Kernel API (never raw .sy). */
+  async getBlockKramdown(blockId: string): Promise<string> {
+    const data = await this.post<{ kramdown?: string; id?: string }>(
+      "/api/block/getBlockKramdown",
+      { id: assertSiyuanId(blockId, "blockId") },
+    );
+    return typeof data.kramdown === "string" ? data.kramdown : "";
+  }
+
+  /**
+   * Ordered content blocks under a document root, excluding the document
+   * row itself. Used by segmented long-document reads.
+   */
+  async listDocumentBlocks(documentId: string): Promise<
+    Array<{
+      id: string;
+      type: string;
+      subtype: string;
+      content: string;
+      markdown: string;
+      sort: number;
+    }>
+  > {
+    const safeId = assertSiyuanId(documentId, "documentId");
+    const rows = await this.sql<{
+      id: string;
+      type: string;
+      subtype: string;
+      content: string;
+      markdown: string;
+      sort: number | string;
+    }>(
+      `SELECT id, type, subtype, content, markdown, sort
+       FROM blocks
+       WHERE root_id = '${escapeSqlLiteral(safeId)}'
+         AND id != '${escapeSqlLiteral(safeId)}'
+       ORDER BY sort ASC, id ASC
+       LIMIT 5000`,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      subtype: row.subtype ?? "",
+      content: row.content ?? "",
+      markdown: row.markdown ?? "",
+      sort: Number(row.sort) || 0,
+    }));
+  }
+
+  /**
+   * Blocks that reference `blockId` as a definition target (`refs` table).
+   * Results are metadata-only snippets for impact previews.
+   */
+  async listReferencingBlocks(blockId: string): Promise<
+    Array<{
+      blockId: string;
+      documentId: string;
+      notebookId: string;
+      contentSnippet: string;
+    }>
+  > {
+    const safeId = assertSiyuanId(blockId, "blockId");
+    const rows = await this.sql<{
+      block_id: string;
+      root_id: string;
+      box: string;
+      content: string;
+    }>(
+      `SELECT r.block_id AS block_id,
+              b.root_id AS root_id,
+              b.box AS box,
+              b.content AS content
+       FROM refs r
+       JOIN blocks b ON b.id = r.block_id
+       WHERE r.def_block_id = '${escapeSqlLiteral(safeId)}'
+       LIMIT 200`,
+    );
+    return rows.map((row) => ({
+      blockId: row.block_id,
+      documentId: row.root_id,
+      notebookId: row.box,
+      contentSnippet: (row.content ?? "").slice(0, 120),
+    }));
   }
 
   async removeDocument(documentId: string): Promise<void> {

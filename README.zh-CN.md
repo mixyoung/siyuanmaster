@@ -1,32 +1,43 @@
-# Agent 访问控制
+# 思源大师（SiYuanMaster）
 
-一个面向可信本机 Agent 的思源原生插件。
+面向可信本机 Agent 的思源原生插件。
 
-已实现：
+- **品牌 slug**：`siyuanmaster`
+- **技术插件 ID（过渡期）**：`siyuan-agent-access`
+- **版本**：`0.4.0`
 
-- 在思源侧边栏显示连接与权限状态；
-- 插件正文、表单和按钮字号跟随思源编辑器字体大小，辅助文字保留可读下限；
-- 通过 GUI 配置允许或禁止访问的笔记本；
-- 分别配置搜索、读取、创建、追加、修改、重命名、移动、跨笔记本移动、删除和导出权限；
-- 配置可选标签、每次/首次/询问策略和 AI 标签提案；
-- 向思源内置 `/mcp` 注册 16 个受控语义工具；
-- 支持有界浏览文档树，以及搜索、读取、创建、追加、更新、安全重命名、安全移动、删除、总结准备和记忆沉淀；
-- 内核侧强制检查笔记本边界，并记录不含正文的审计日志；
-- 不启动额外的 Node/Python 常驻服务。
+## 已实现
 
-## 安装
+- 侧边栏展示连接状态、安全策略与 P1 能力；
+- 正文/表单/按钮字号跟随思源编辑器字体大小；
+- GUI 配置笔记本允许/禁止名单、操作权限、标签策略、安全写入策略；
+- 向思源内置 `/mcp` 注册 **19** 个受控工具（原 16 + `resolve_document` / `read_note_segments` / `edit_block`）；
+- 工具完全限定名保持 `plugin__siyuan_agent_access__*`，保证已有 Agent 配置与原 16 个工具名不断；
+- `update_note` / `edit_block` 走 Safe Write Transaction（写前快照、状态复核、只执行一次、回读验证、无正文审计）；
+- 内核强制笔记本边界与文档树权限继承；
+- 不启动额外 Node/Python 常驻服务。
 
-将 `package.zip` 作为思源插件包导入，或把解压内容放入：
+## 命名与兼容
+
+| 维度 | 值 | 说明 |
+|---|---|---|
+| 展示名 | 思源大师 / SiYuanMaster | 用户可见品牌 |
+| package 名 | `siyuanmaster` | 品牌包名 |
+| `plugin.json` name | `siyuan-agent-access` | 保留安装目录、petal 存储与 MCP 命名空间 |
+| Dock 键 | `siyuan-agent-access-dock` | 避免布局重置 |
+| 仅首次打标属性 | `custom-agent-access-tagged` | 避免升级后重复打标 |
+
+**单插件无法注册双原生命名空间**（思源内核由 `plugin.json` name 推导命名空间）。未来若切换技术 ID 到 `siyuanmaster`，需要双插件或迁移桥；本版本**不**在启动时自动迁移存储，也**不**删除旧存储。
+
+安装目录仍为：
 
 ```text
 <工作空间>/data/plugins/siyuan-agent-access
 ```
 
-启用插件后，在右侧边栏打开“Agent 访问控制”。初始策略为“只允许选中”，且没有选中任何笔记本，因此默认没有笔记可访问。
+启用后打开右侧边栏「思源大师」。初始策略为「只允许选中」，且未选中任何笔记本，因此默认不可访问。
 
 ## Agent 接入
-
-其他 Agent 连接思源内置的 Streamable HTTP MCP：
 
 ```json
 {
@@ -42,40 +53,27 @@
 }
 ```
 
-接入后先调用：
+先调用：
 
 1. `plugin__siyuan_agent_access__get_policy`
 2. `plugin__siyuan_agent_access__list_accessible_notebooks`
-3. 需要了解层级时调用 `plugin__siyuan_agent_access__list_document_tree`，再使用同一命名空间下的搜索、读取和写入工具。
+3. 需要层级时用 `list_document_tree`；路径查找用 `resolve_document`（只读）；长文用 `read_note_segments`；块编辑用 `edit_block`。
 
-如果操作权限是“需确认”，Agent 必须先获得用户确认，再携带 `confirmed=true` 重试。标签模式是“每次询问”时，每个写入调用都必须明确传入 `tagging.decision=add` 或 `skip`。
+需确认的操作必须先获用户同意，再带 `confirmed=true` 重试。
 
-## 文档树浏览
+## 安全边界
 
-`list_document_tree` 是只读工具，必须指定已授权的 `notebookId`，也可用 `parentDocumentId` 只浏览某个文档分支。默认最多返回 3 层、200 个节点，可分别在 1–10 层和 1–500 个节点之间调整。
+原生 `/mcp` 仍是管理员级入口。本插件只约束自己注册的工具，无法阻止持有完整 API Token 的客户端调用原生高权限工具。
 
-结果只包含文档 ID、标题、层级路径、父文档、更新时间和是否有子文档等元数据，不包含正文。若结果被深度或节点上限截断，Agent 应根据 `truncated` 标记缩小到相关分支继续读取，而不是一次性扩大范围。
+可选 Rust 组件：`siyuanmaster-core`、`siyuanmasterd`（本机网关）、`siyuanmaster`（CLI）。网关到思源内核的出站代理**尚未**在本轮做思源实机验证。
 
-## 安全重命名与移动
+## 构建
 
-`rename_note` 和 `move_note` 使用两阶段协议：
+```bash
+pnpm build
+cargo fmt --check
+cargo clippy --workspace -- -D warnings
+cargo test --workspace
+```
 
-1. 首次调用不传 `previewToken`，插件只执行预演；
-2. 插件返回当前来源、目标位置、子文档数量、冲突检查结果和十分钟有效的一次性令牌；
-3. Agent 展示预演；权限为“需确认”时必须取得用户明确批准；
-4. 第二次调用带回完全相同的参数与 `previewToken`，需要确认时同时传入 `confirmed=true`；
-5. 插件重新校验来源、目标父文档、笔记本边界和名称冲突，执行后再次读取并验证结果。
-
-移动工具始终把整棵文档树一起移动。源笔记本和目标笔记本必须同时可访问，目标不能是来源自身或其后代。跨笔记本移动由独立权限控制，默认禁止。
-
-## 标签行为
-
-- 不要求也不自动强制添加 `siyuanMCP`；
-- 标签内容完全自定义，也可由调用 Agent 根据最终文档总结；
-- 写入时先读取现有 `tags` 属性，再追加、规范化和去重；
-- “仅首次”通过文档自定义属性记录是否已经处理；
-- 关闭标签策略后，任何固定标签和候选标签都不会写入。
-
-## 安全说明
-
-思源原生 `/mcp` 当前使用管理员级鉴权。插件可以约束自己注册的工具，但无法阻止持有完整思源 API Token 的客户端调用思源原生高权限工具。本插件面向用户明确授权的可信本机 Agent。
+`pnpm build` 会执行能力目录生成与新鲜度校验；生成物与 `catalog/capabilities.json` 不一致时构建失败。

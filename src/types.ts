@@ -68,12 +68,35 @@ export interface AuditPolicy {
   redactContent: boolean;
 }
 
+export type ReferenceProtectionMode = "warn" | "deny";
+
+export interface LongDocumentPolicy {
+  maxBlocksPerWindow: number;
+  maxCharsPerBlock: number;
+  maxOutlineBlocks: number;
+}
+
+export interface BlockEditPolicy {
+  requireExpectedState: boolean;
+  defaultConfirm: boolean;
+  maxBlocks: number;
+}
+
+export interface SafetyPolicy {
+  snapshotBeforeWrite: boolean;
+  referenceProtection: ReferenceProtectionMode;
+  permissionInheritance: boolean;
+  longDocument: LongDocumentPolicy;
+  blockEdit: BlockEditPolicy;
+}
+
 export interface PluginPolicy {
   schemaVersion: 1;
   access: AccessPolicy;
   operations: OperationPolicy;
   tagging: TaggingPolicy;
   audit: AuditPolicy;
+  safety: SafetyPolicy;
 }
 
 export interface TaggingRequest {

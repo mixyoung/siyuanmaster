@@ -15,9 +15,42 @@ describe("access policy", () => {
       move: "confirm",
       moveAcrossNotebooks: "deny",
     });
+    expect(policy.safety).toEqual(DEFAULT_POLICY.safety);
+    expect(policy.safety.snapshotBeforeWrite).toBe(true);
+    expect(policy.safety.referenceProtection).toBe("warn");
+    expect(policy.safety.permissionInheritance).toBe(true);
     expect(isNotebookAllowed("20260101000000-abcdefg", policy)).toBe(
       false,
     );
+  });
+
+  it("normalizes safety policy with clamps and enums", () => {
+    const policy = normalizePolicy({
+      safety: {
+        snapshotBeforeWrite: false,
+        referenceProtection: "deny",
+        permissionInheritance: false,
+        longDocument: {
+          maxBlocksPerWindow: 999,
+          maxCharsPerBlock: 10,
+          maxOutlineBlocks: 1,
+        },
+        blockEdit: {
+          requireExpectedState: false,
+          defaultConfirm: false,
+          maxBlocks: 9999,
+        },
+      },
+    });
+    // P0/P1 mandatory invariants: always true even if stored false.
+    expect(policy.safety.snapshotBeforeWrite).toBe(true);
+    expect(policy.safety.permissionInheritance).toBe(true);
+    expect(policy.safety.referenceProtection).toBe("deny");
+    expect(policy.safety.longDocument.maxBlocksPerWindow).toBe(200);
+    expect(policy.safety.longDocument.maxCharsPerBlock).toBe(256);
+    expect(policy.safety.longDocument.maxOutlineBlocks).toBe(10);
+    expect(policy.safety.blockEdit.maxBlocks).toBe(500);
+    expect(policy.safety.blockEdit.requireExpectedState).toBe(false);
   });
 
   it("supports denylist semantics", () => {

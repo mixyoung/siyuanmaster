@@ -3,6 +3,7 @@ import type {
   NotebookSummary,
   OperationDecision,
   PluginPolicy,
+  ReferenceProtectionMode,
   TagAiProvider,
   TagApplyMode,
   TaggingMode,
@@ -60,6 +61,21 @@ export const DEFAULT_POLICY: PluginPolicy = {
     recordReadOperations: true,
     redactContent: true,
   },
+  safety: {
+    snapshotBeforeWrite: true,
+    referenceProtection: "warn",
+    permissionInheritance: true,
+    longDocument: {
+      maxBlocksPerWindow: 50,
+      maxCharsPerBlock: 8000,
+      maxOutlineBlocks: 500,
+    },
+    blockEdit: {
+      requireExpectedState: true,
+      defaultConfirm: true,
+      maxBlocks: 200,
+    },
+  },
 };
 
 const ACCESS_MODES = new Set<AccessMode>(["allowlist", "denylist"]);
@@ -74,6 +90,10 @@ const TAG_AI_PROVIDERS = new Set<TagAiProvider>([
   "siyuan_ai",
 ]);
 const TAG_APPLY_MODES = new Set<TagApplyMode>(["propose", "auto"]);
+const REFERENCE_PROTECTION_MODES = new Set<ReferenceProtectionMode>([
+  "warn",
+  "deny",
+]);
 
 export function clonePolicy(policy: PluginPolicy): PluginPolicy {
   return JSON.parse(JSON.stringify(policy)) as PluginPolicy;
@@ -151,6 +171,18 @@ export function normalizePolicy(value: unknown): PluginPolicy {
   const audit =
     source.audit && typeof source.audit === "object"
       ? (source.audit as Record<string, unknown>)
+      : {};
+  const safety =
+    source.safety && typeof source.safety === "object"
+      ? (source.safety as Record<string, unknown>)
+      : {};
+  const longDocument =
+    safety.longDocument && typeof safety.longDocument === "object"
+      ? (safety.longDocument as Record<string, unknown>)
+      : {};
+  const blockEdit =
+    safety.blockEdit && typeof safety.blockEdit === "object"
+      ? (safety.blockEdit as Record<string, unknown>)
       : {};
 
   const operation = (name: keyof PluginPolicy["operations"]) =>
@@ -277,6 +309,53 @@ export function normalizePolicy(value: unknown): PluginPolicy {
         audit.redactContent,
         DEFAULT_POLICY.audit.redactContent,
       ),
+    },
+    safety: {
+      // P0/P1 mandatory invariants: keep fields for stored-config
+      // compatibility, but always normalize to true.
+      snapshotBeforeWrite: true,
+      referenceProtection: enumOr(
+        safety.referenceProtection,
+        REFERENCE_PROTECTION_MODES,
+        DEFAULT_POLICY.safety.referenceProtection,
+      ),
+      permissionInheritance: true,
+      longDocument: {
+        maxBlocksPerWindow: numberInRange(
+          longDocument.maxBlocksPerWindow,
+          DEFAULT_POLICY.safety.longDocument.maxBlocksPerWindow,
+          1,
+          200,
+        ),
+        maxCharsPerBlock: numberInRange(
+          longDocument.maxCharsPerBlock,
+          DEFAULT_POLICY.safety.longDocument.maxCharsPerBlock,
+          256,
+          50000,
+        ),
+        maxOutlineBlocks: numberInRange(
+          longDocument.maxOutlineBlocks,
+          DEFAULT_POLICY.safety.longDocument.maxOutlineBlocks,
+          10,
+          2000,
+        ),
+      },
+      blockEdit: {
+        requireExpectedState: booleanOr(
+          blockEdit.requireExpectedState,
+          DEFAULT_POLICY.safety.blockEdit.requireExpectedState,
+        ),
+        defaultConfirm: booleanOr(
+          blockEdit.defaultConfirm,
+          DEFAULT_POLICY.safety.blockEdit.defaultConfirm,
+        ),
+        maxBlocks: numberInRange(
+          blockEdit.maxBlocks,
+          DEFAULT_POLICY.safety.blockEdit.maxBlocks,
+          1,
+          500,
+        ),
+      },
     },
   };
 }

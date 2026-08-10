@@ -170,6 +170,10 @@
   font-size: var(--saa-font-size-small);
 }
 
+.saa-ledger--spaced {
+  margin-top: 12px;
+}
+
 .saa-ledger {
   margin-top: 16px;
   border-top: 1px solid var(--saa-line);

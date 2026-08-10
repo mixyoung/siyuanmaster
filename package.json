@@ -1,12 +1,14 @@
 {
-  "name": "siyuan-agent-access",
-  "version": "0.3.0",
+  "name": "siyuanmaster",
+  "version": "0.4.0",
   "private": true,
-  "description": "A native SiYuan plugin that exposes policy-aware MCP tools for trusted local agents.",
+  "description": "SiYuanMaster — policy-aware SiYuan access boundary and safe write tools for trusted local agents.",
   "scripts": {
+    "generate": "node scripts/generate-capabilities.mjs",
+    "check:catalog": "node scripts/check-capabilities.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "pnpm run typecheck && pnpm run test && node scripts/build.mjs"
+    "build": "pnpm run generate && pnpm run check:catalog && pnpm run typecheck && pnpm run test && node scripts/build.mjs"
   },
   "devDependencies": {
     "archiver": "^7.0.1",

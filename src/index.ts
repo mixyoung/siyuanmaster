@@ -15,7 +15,11 @@ import type {
 } from "./types";
 import "./index.css";
 
+// Dock type key intentionally retained across brand rename so user layouts
+// do not reset when upgrading from Agent Access to SiYuanMaster.
 const DOCK_TYPE = "siyuan-agent-access-dock";
+const PRODUCT_DISPLAY_NAME = "思源大师";
+const PRODUCT_BRAND = "SiYuanMaster";
 
 function escapeHtml(value: string): string {
   return value
@@ -84,7 +88,7 @@ export default class AgentAccessPlugin extends Plugin {
     } catch (error) {
       console.error(`[${this.name}] bootstrap failed`, error);
       showMessage(
-        `Agent 访问控制初始化失败：${
+        `${PRODUCT_DISPLAY_NAME}初始化失败：${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -99,7 +103,7 @@ export default class AgentAccessPlugin extends Plugin {
         position: "RightBottom",
         size: { width: 360, height: 0 },
         icon: "iconLock",
-        title: "Agent 访问控制",
+        title: PRODUCT_DISPLAY_NAME,
       },
       data: {},
       type: DOCK_TYPE,
@@ -133,8 +137,8 @@ export default class AgentAccessPlugin extends Plugin {
       },
     });
     this.setting.addItem({
-      title: "Agent 访问控制",
-      description: "配置笔记本访问范围、操作权限和标签策略",
+      title: PRODUCT_DISPLAY_NAME,
+      description: "配置访问边界、安全写入策略、操作权限和标签策略",
       actionElement: openButton,
     });
   }
@@ -179,12 +183,13 @@ export default class AgentAccessPlugin extends Plugin {
         ? "ready"
         : "pending";
 
+    const safety = this.policy.safety;
     this.dockElement.innerHTML = `
       <div class="saa-dock">
         <header class="saa-dock__masthead">
           <div>
-            <p class="saa-kicker">SIYUAN / AGENT GATE</p>
-            <h2>访问控制台</h2>
+            <p class="saa-kicker">SIYUANMASTER / ACCESS BOUNDARY</p>
+            <h2>${PRODUCT_DISPLAY_NAME}</h2>
           </div>
           <span class="saa-status saa-status--${statusTone}">
             <i></i>${status}
@@ -228,14 +233,66 @@ export default class AgentAccessPlugin extends Plugin {
             <strong>先预演 · 再执行</strong>
           </div>
           <div class="saa-ledger__row">
+            <span>MCP 命名空间</span>
+            <code>plugin__siyuan_agent_access__*</code>
+          </div>
+          <div class="saa-ledger__row">
             <span>MCP 入口</span>
             <code>127.0.0.1:6806/mcp</code>
           </div>
         </section>
 
+        <section class="saa-ledger">
+          <div class="saa-ledger__row">
+            <span>写前快照</span>
+            <strong>已启用（强制）</strong>
+          </div>
+          <div class="saa-ledger__row">
+            <span>引用保护</span>
+            <strong>${
+              safety.referenceProtection === "deny" ? "拒绝破坏引用" : "警告后可写"
+            }</strong>
+          </div>
+          <div class="saa-ledger__row">
+            <span>权限继承</span>
+            <strong>文档树继承笔记本（强制）</strong>
+          </div>
+          <div class="saa-ledger__row">
+            <span>长文窗口</span>
+            <strong>≤${safety.longDocument.maxBlocksPerWindow} 块</strong>
+          </div>
+          <div class="saa-ledger__row">
+            <span>块编辑确认</span>
+            <strong>${safety.blockEdit.defaultConfirm ? "默认需确认" : "跟随策略"}</strong>
+          </div>
+        </section>
+
+        <section class="saa-ledger">
+          <div class="saa-ledger__row">
+            <span>P1 能力</span>
+            <strong>19 工具 · Safe Write</strong>
+          </div>
+          <div class="saa-ledger__row">
+            <span>路径查找</span>
+            <strong>resolve_document 只读</strong>
+          </div>
+          <div class="saa-ledger__row">
+            <span>分段读取</span>
+            <strong>read_note_segments</strong>
+          </div>
+          <div class="saa-ledger__row">
+            <span>安全块编辑</span>
+            <strong>edit_block</strong>
+          </div>
+          <div class="saa-ledger__row">
+            <span>技术 ID</span>
+            <code>siyuan-agent-access</code>
+          </div>
+        </section>
+
         <aside class="saa-risk-note">
           <span>已知边界</span>
-          <p>原生 MCP 使用管理员级鉴权；本插件面向你已授权的可信本机 Agent。</p>
+          <p>原生 MCP 使用管理员级鉴权；${PRODUCT_BRAND} 只约束本插件注册的工具，面向你已授权的可信本机 Agent。切换技术 ID 需双插件或迁移桥，本版本不自动迁移存储。</p>
         </aside>
 
         <div class="saa-dock__actions">
@@ -257,7 +314,7 @@ export default class AgentAccessPlugin extends Plugin {
     try {
       await Promise.all([this.loadPolicy(), this.refreshNotebooks()]);
       this.renderDock();
-      showMessage("Agent 访问控制状态已刷新", 2500, "info");
+      showMessage(`${PRODUCT_DISPLAY_NAME}状态已刷新`, 2500, "info");
     } catch (error) {
       this.renderDock(error);
       showMessage(
@@ -324,16 +381,16 @@ export default class AgentAccessPlugin extends Plugin {
     let onlySelected = false;
 
     const dialog = new Dialog({
-      title: "Agent 访问控制",
+      title: PRODUCT_DISPLAY_NAME,
       width: "min(1040px, 94vw)",
       height: "82vh",
       content: `
         <div class="saa-settings">
           <header class="saa-settings__hero">
             <div>
-              <p class="saa-kicker">POLICY WORKBENCH / 01</p>
-              <h2>决定 AI 能看见什么</h2>
-              <p>选择访问边界、写入行为和标签策略。权限保存后立即生效。</p>
+              <p class="saa-kicker">SIYUANMASTER / ACCESS BOUNDARY</p>
+              <h2>决定 AI 能看见与写入什么</h2>
+              <p>配置访问边界、安全写入、操作权限与标签策略。保存后立即生效。</p>
             </div>
             <div class="saa-settings__seal">
               <span>LOCAL</span>
@@ -540,12 +597,101 @@ export default class AgentAccessPlugin extends Plugin {
               </div>
             </section>
 
+            <section class="saa-section">
+              <div class="saa-section__heading">
+                <span>04</span>
+                <div>
+                  <h3>安全写入与 P1 能力</h3>
+                  <p>Safe Write Transaction：写前快照、引用保护、长文硬上限、块编辑预期状态。技术 ID 过渡期仍为 siyuan-agent-access。</p>
+                </div>
+              </div>
+
+              <div class="saa-permission-grid">
+                <div class="saa-switch-field">
+                  <span>
+                    <strong>写前快照</strong>
+                    <small>P0/P1 强制不变量：快照失败则停止，不执行写入</small>
+                  </span>
+                  <strong>已启用</strong>
+                </div>
+                <label class="saa-field">
+                  <span>引用保护</span>
+                  <select class="b3-select fn__block" data-saa-field="reference-protection">
+                    <option value="warn"
+                      ${draft.safety.referenceProtection === "warn" ? "selected" : ""}>
+                      警告后可写
+                    </option>
+                    <option value="deny"
+                      ${draft.safety.referenceProtection === "deny" ? "selected" : ""}>
+                      拒绝破坏引用
+                    </option>
+                  </select>
+                </label>
+                <div class="saa-switch-field">
+                  <span>
+                    <strong>文档树权限继承</strong>
+                    <small>P0/P1 强制不变量：笔记本判定直接应用于全部子孙文档与块</small>
+                  </span>
+                  <strong>已启用</strong>
+                </div>
+                <label class="saa-field">
+                  <span>长文每窗最大块数</span>
+                  <input class="b3-text-field fn__block" type="number" min="1" max="200"
+                    data-saa-field="max-blocks-per-window"
+                    value="${draft.safety.longDocument.maxBlocksPerWindow}">
+                </label>
+                <label class="saa-field">
+                  <span>每块最大字符</span>
+                  <input class="b3-text-field fn__block" type="number" min="256" max="50000"
+                    data-saa-field="max-chars-per-block"
+                    value="${draft.safety.longDocument.maxCharsPerBlock}">
+                </label>
+                <label class="saa-field">
+                  <span>大纲最大块数</span>
+                  <input class="b3-text-field fn__block" type="number" min="10" max="2000"
+                    data-saa-field="max-outline-blocks"
+                    value="${draft.safety.longDocument.maxOutlineBlocks}">
+                </label>
+                <label class="saa-switch-field">
+                  <span>
+                    <strong>块编辑需要预期状态</strong>
+                    <small>expectedContent 或 expectedHash</small>
+                  </span>
+                  <input class="b3-switch" type="checkbox" data-saa-field="require-expected-state"
+                    ${draft.safety.blockEdit.requireExpectedState ? "checked" : ""}>
+                </label>
+                <label class="saa-switch-field">
+                  <span>
+                    <strong>块编辑默认确认</strong>
+                    <small>edit_block 默认需 confirmed=true</small>
+                  </span>
+                  <input class="b3-switch" type="checkbox" data-saa-field="block-default-confirm"
+                    ${draft.safety.blockEdit.defaultConfirm ? "checked" : ""}>
+                </label>
+              </div>
+
+              <div class="saa-ledger saa-ledger--spaced">
+                <div class="saa-ledger__row">
+                  <span>P1 工具</span>
+                  <strong>resolve_document · read_note_segments · edit_block</strong>
+                </div>
+                <div class="saa-ledger__row">
+                  <span>工具总数</span>
+                  <strong>19（含原 16）</strong>
+                </div>
+                <div class="saa-ledger__row">
+                  <span>命名空间</span>
+                  <code>plugin__siyuan_agent_access__*</code>
+                </div>
+              </div>
+            </section>
+
             <section class="saa-section saa-section--risk">
               <div class="saa-section__heading">
                 <span>!</span>
                 <div>
                   <h3>已接受的安全边界</h3>
-                  <p>思源原生 /mcp 仍是管理员级入口。本策略只约束插件注册的工具。</p>
+                  <p>思源原生 /mcp 仍是管理员级入口。本策略只约束插件注册的工具。品牌为 ${PRODUCT_BRAND}，技术 ID 过渡期保留 siyuan-agent-access；未来切换 ID 需要双插件或迁移桥。</p>
                 </div>
               </div>
             </section>
@@ -683,6 +829,58 @@ export default class AgentAccessPlugin extends Plugin {
         input.dataset.saaField === "ai-enabled"
       ) {
         draft.tagging.ai.enabled = input.checked;
+        return;
+      }
+      if (
+        input instanceof HTMLSelectElement &&
+        input.dataset.saaField === "reference-protection"
+      ) {
+        draft.safety.referenceProtection =
+          input.value === "deny" ? "deny" : "warn";
+        return;
+      }
+      if (
+        input instanceof HTMLInputElement &&
+        input.dataset.saaField === "max-blocks-per-window"
+      ) {
+        draft.safety.longDocument.maxBlocksPerWindow = Math.min(
+          200,
+          Math.max(1, input.valueAsNumber || 50),
+        );
+        return;
+      }
+      if (
+        input instanceof HTMLInputElement &&
+        input.dataset.saaField === "max-chars-per-block"
+      ) {
+        draft.safety.longDocument.maxCharsPerBlock = Math.min(
+          50000,
+          Math.max(256, input.valueAsNumber || 8000),
+        );
+        return;
+      }
+      if (
+        input instanceof HTMLInputElement &&
+        input.dataset.saaField === "max-outline-blocks"
+      ) {
+        draft.safety.longDocument.maxOutlineBlocks = Math.min(
+          2000,
+          Math.max(10, input.valueAsNumber || 500),
+        );
+        return;
+      }
+      if (
+        input instanceof HTMLInputElement &&
+        input.dataset.saaField === "require-expected-state"
+      ) {
+        draft.safety.blockEdit.requireExpectedState = input.checked;
+        return;
+      }
+      if (
+        input instanceof HTMLInputElement &&
+        input.dataset.saaField === "block-default-confirm"
+      ) {
+        draft.safety.blockEdit.defaultConfirm = input.checked;
         return;
       }
       if (

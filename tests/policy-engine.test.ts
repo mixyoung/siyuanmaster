@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { clonePolicy, DEFAULT_POLICY } from "../src/config";
 import {
   evaluateOperation,
+  mergeTags,
   normalizeTags,
   planTags,
 } from "../src/policy-engine";
@@ -94,5 +95,15 @@ describe("tag policy", () => {
     expect(
       normalizeTags(["#AI", "AI", " 知识 ", "x".repeat(33), 1]),
     ).toEqual(["AI", "知识"]);
+  });
+
+  it("mergeTags never overwrites existing tags", () => {
+    expect(mergeTags(["已有", "保留"], ["#新增", "已有", ""])).toEqual([
+      "已有",
+      "保留",
+      "新增",
+    ]);
+    expect(mergeTags(["a", "b"], ["b", "c"])).toEqual(["a", "b", "c"]);
+    expect(mergeTags(["alpha"], undefined)).toEqual(["alpha"]);
   });
 });

@@ -36,6 +36,29 @@ export function normalizeTags(value: unknown): string[] {
   ];
 }
 
+/**
+ * Merges tags for a write: reads the existing tags first, appends the new
+ * additions, normalizes (trim, strip leading `#`, drop empties), and
+ * de-duplicates while preserving first-seen order. Existing tags are never
+ * removed or overwritten.
+ */
+export function mergeTags(
+  existingTags: unknown,
+  additions: unknown,
+): string[] {
+  const existing = normalizeTags(existingTags);
+  const additionsNormalized = normalizeTags(additions);
+  const seen = new Set(existing);
+  const merged = [...existing];
+  for (const tag of additionsNormalized) {
+    if (!seen.has(tag)) {
+      seen.add(tag);
+      merged.push(tag);
+    }
+  }
+  return merged;
+}
+
 export function evaluateOperation(
   policy: PluginPolicy,
   operation: ControlledOperation,

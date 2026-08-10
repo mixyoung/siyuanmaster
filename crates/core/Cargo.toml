@@ -1,0 +1,16 @@
+[package]
+name = "siyuanmaster-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reusable core for SiYuanMaster: capability catalog, scoped tokens, SafeWriteTxn write transactions, hashing, references, permissions, paths, and audit."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]

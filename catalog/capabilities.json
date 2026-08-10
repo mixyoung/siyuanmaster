@@ -1,0 +1,235 @@
+{
+  "schemaVersion": 1,
+  "product": {
+    "id": "siyuanmaster",
+    "technicalId": "siyuan-agent-access",
+    "displayName": {
+      "default": "SiYuanMaster",
+      "zh-CN": "思源大师"
+    },
+    "version": "0.4.0",
+    "minAppVersion": "3.7.0"
+  },
+  "namespaces": {
+    "plugin": "plugin__siyuan_agent_access__",
+    "gateway": "siyuanmaster"
+  },
+  "pluginTools": [
+    {
+      "name": "get_policy",
+      "category": "policy",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "list_accessible_notebooks",
+      "category": "notebook",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "list_document_tree",
+      "category": "tree",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "search_notes",
+      "category": "search",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "read_note",
+      "category": "read",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "resolve_document",
+      "category": "read",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "read_note_segments",
+      "category": "read",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "create_note",
+      "category": "write",
+      "readOnly": false,
+      "confirmDefault": false
+    },
+    {
+      "name": "append_note",
+      "category": "write",
+      "readOnly": false,
+      "confirmDefault": false
+    },
+    {
+      "name": "update_note",
+      "category": "write",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
+      "name": "edit_block",
+      "category": "block",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
+      "name": "rename_note",
+      "category": "structure",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
+      "name": "move_note",
+      "category": "structure",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
+      "name": "delete_note",
+      "category": "write",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
+      "name": "suggest_tags",
+      "category": "tag",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "apply_tags",
+      "category": "tag",
+      "readOnly": false,
+      "confirmDefault": false
+    },
+    {
+      "name": "prepare_summary",
+      "category": "read",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "save_memory",
+      "category": "write",
+      "readOnly": false,
+      "confirmDefault": false
+    },
+    {
+      "name": "get_audit_log",
+      "category": "audit",
+      "readOnly": true,
+      "confirmDefault": false
+    }
+  ],
+  "gateway": {
+    "endpoints": [
+      {
+        "path": "/healthz",
+        "method": "GET",
+        "auth": "none",
+        "audited": false
+      },
+      {
+        "path": "/v1/capabilities",
+        "method": "GET",
+        "auth": "none",
+        "audited": false
+      },
+      {
+        "path": "/v1/token/verify",
+        "method": "POST",
+        "auth": "none",
+        "audited": true
+      },
+      {
+        "path": "/v1/audit",
+        "method": "GET",
+        "auth": "scope:audit:read",
+        "audited": false
+      },
+      {
+        "path": "/v1/txn/preview",
+        "method": "POST",
+        "auth": "scope:txn:write",
+        "audited": true
+      },
+      {
+        "path": "/v1/txn/confirm",
+        "method": "POST",
+        "auth": "scope:txn:write",
+        "audited": true
+      }
+    ],
+    "token": {
+      "format": "smt1.<payloadB64Url>.<macB64Url>",
+      "algorithm": "HMAC-SHA256",
+      "defaultTtlSeconds": 3600,
+      "scopes": [
+        "catalog:read",
+        "op:read",
+        "op:write",
+        "txn:write",
+        "audit:read",
+        "notebook:read:<notebookId>",
+        "notebook:write:<notebookId>"
+      ]
+    }
+  },
+  "writeTransaction": {
+    "name": "SafeWriteTxn",
+    "maxPreviewAgeSeconds": 600,
+    "states": [
+      "previewed",
+      "awaiting_confirmation",
+      "confirmed",
+      "executing",
+      "verifying",
+      "committed",
+      "failed",
+      "unknown"
+    ],
+    "events": [
+      "prepare",
+      "snapshot_failed",
+      "snapshot_ok",
+      "confirm",
+      "state_mismatch",
+      "execute",
+      "readback_ok",
+      "readback_failed",
+      "uncertain"
+    ],
+    "terminalStates": [
+      "committed",
+      "failed",
+      "unknown"
+    ],
+    "invariants": [
+      "snapshot_failure_stops",
+      "exactly_once",
+      "no_auto_retry_on_uncertain",
+      "state_or_hash_check_required",
+      "readback_required",
+      "audit_without_body"
+    ]
+  },
+  "security": {
+    "defaultDeny": true,
+    "adminTokenStaysInTrustedBoundary": true,
+    "auditBodyRedaction": true
+  },
+  "compatibility": {
+    "originalToolCount": 16,
+    "technicalIdPolicy": "retain-for-transition",
+    "note": "For P0/P1 the plugin.json technical ID stays siyuan-agent-access so existing installations, the petal storage path, and the original 16 fully-qualified tool names (plugin__siyuan_agent_access__*) keep working unchanged. The SiYuan kernel derives the MCP namespace from the plugin.json name (verified in kernel source plugin/api_mcp.go at v3.8.0-alpha.2: plugin__<sanitized-plugin>__<sanitized-tool>), so a single plugin cannot register two native namespaces. Switching the technical ID to siyuanmaster is a later release gate (dual-plugin or migration bridge) and must not be claimed for this round. The capability catalog stores only bare tool names and capability metadata; fully-qualified names are computed from the current technical ID."
+  }
+}

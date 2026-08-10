@@ -1,11 +1,11 @@
 ---
-name: siyuan-agent-access
-description: Use a user's SiYuan notes through the policy-aware Agent Access plugin tools for bounded document-tree browsing, scoped search, reading, writing, safe two-stage rename and move, summarization, optional tagging, memory persistence, and metadata-only audit review.
+name: siyuanmaster
+description: Use a user's SiYuan notes through the SiYuanMaster (technical id siyuan-agent-access) policy-aware plugin tools for bounded document-tree browsing, path lookup, segmented long reads, scoped search, reading, writing, safe block edit, safe two-stage rename and move, summarization, optional tagging, memory persistence, and metadata-only audit review.
 ---
 
-# SiYuan Agent Access
+# SiYuanMaster (technical id: siyuan-agent-access)
 
-Use only `plugin__siyuan_agent_access__*` tools when the user expects notebook access controls to apply.
+Use only `plugin__siyuan_agent_access__*` tools when the user expects notebook access controls to apply. Brand name is SiYuanMaster / 思源大师; the MCP namespace stays under the technical id for the transition period.
 
 ## Required start
 
@@ -19,17 +19,27 @@ The native SiYuan MCP server may expose other administrator-level tools. Their p
 
 1. Use `list_document_tree` when the user needs notebook hierarchy or must choose a document by location.
 2. Start with bounded defaults. If the tree is truncated, use `parentDocumentId` to inspect only the relevant branch instead of broadly increasing limits.
-3. Use `search_notes` with a focused query when the user is looking for content rather than structure.
-4. Read only the most relevant results with `read_note`.
-5. Respect every `truncated=true` result; request another bounded tree or read only when required.
-6. Do not infer the existence or name of inaccessible notebooks from errors.
+3. Use `resolve_document` only as a **read-only** path lookup (`notebookId` + `hPath`). Never write by human path.
+4. Use `search_notes` with a focused query when the user is looking for content rather than structure.
+5. Read with `read_note` for full bounded Markdown, or `read_note_segments` for outline + hard-capped full-block windows on long notes.
+6. Respect every `truncated=true` result; request another bounded tree or window only when required.
+7. Do not infer the existence or name of inaccessible notebooks from errors.
 
 ## Writes
 
 - Use `create_note`, `append_note`, or `update_note`.
+- `update_note` runs Safe Write Transaction (snapshot → confirm if required → state recheck → execute once → readback). On `state_changed` or `unknown`, stop and re-preview; never auto-retry uncertain outcomes.
 - If the active operation decision is `confirm`, ask the user immediately before the write, then retry with `confirmed=true`.
 - `delete_note` always requires user confirmation and an exact `expectedTitle`.
 - Never set `confirmed=true` without actual user approval.
+
+## Block edit
+
+- Use `edit_block` with an **exact** SiYuan block ID (never a path).
+- Provide `expectedContent` or `expectedHash` matching the current block when policy requires expected state.
+- Review reference impact (`referenceRisk`, `referencing`). If protection is `deny` and refs exist, do not force the edit.
+- Obtain user confirmation when required (default for block edit), then call again with `confirmed=true`.
+- On snapshot failure, state drift, or readback mismatch, stop; do not auto-retry.
 
 ## Rename and move
 
@@ -48,29 +58,17 @@ The native SiYuan MCP server may expose other administrator-level tools. Their p
 - Tagging is optional. Never add `siyuanMCP` unless the user explicitly chooses it.
 - In `ask` mode, every write must specify `tagging.decision="add"` or `"skip"`.
 - Generate concise, retrieval-oriented candidate tags from the final content with `suggest_tags`.
-- Apply tags only through `apply_tags` or the `tagging` field of a write tool.
-- Existing tags are preserved by the plugin.
+- Existing tags are preserved; new tags are appended and de-duplicated (never overwrite).
 
-## Summary and memory
+## Memory and summary
 
-- Use `prepare_summary` to obtain bounded content and summary guidance.
-- Present a summary before persisting it unless the user already requested persistence.
-- Use `save_memory` only for durable facts, decisions, preferences, reusable procedures, or important unresolved questions.
-- Avoid saving transient chat, speculative conclusions, secrets, or duplicated material.
+- `prepare_summary` is read-only preparation; write only after clear user intent.
+- `save_memory` creates or appends under the memory tagging policy.
 
-## Audit review
+## Audit
 
-- Use `get_audit_log` only when the user asks to inspect recent plugin activity, outcomes, or policy enforcement.
-- Request the smallest useful `limit`; the accepted range is 1-200 and the default is 50.
-- Treat audit entries as metadata, not note content. They record outcomes, lengths, and tag counts but never document bodies.
-- Do not infer inaccessible notebook names or note contents from audit metadata.
+- `get_audit_log` returns metadata only (no note bodies, no tokens).
 
-## Error handling
+## Security boundary
 
-- `confirmation_required`: ask the user, then retry if approved.
-- `tag_decision_required`: present tag candidates and ask whether to add or skip.
-- `notebook_denied`: stop; do not attempt native MCP tools as a workaround.
-- `operation_denied`: explain that the current GUI policy blocks the operation.
-- `preview_expired`: request a new preview and do not reuse the old token.
-- `state_changed`: show that the source or destination changed, then preview again.
-- `name_conflict`: stop and ask the user to choose another title or destination.
+Native `/mcp` is administrator-authenticated. Prefer the plugin tools above when the user asked for access control. Do not claim dual MCP namespaces or that storage was auto-migrated to a new technical id.

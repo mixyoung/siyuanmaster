@@ -8,6 +8,18 @@ import {
   POLICY_STORAGE_KEY,
 } from "./config";
 import {
+  blockDisplayText,
+  buildOutline,
+  classifyReferenceRisk,
+  parseWriteTarget,
+  referenceAllows,
+  resolveDocumentPath,
+  windowBlocks,
+  type BlockRow,
+  type ReferencingBlock,
+} from "./document-access";
+import { buildDocumentTree } from "./document-tree";
+import {
   assertSiyuanId,
   BlockRecord,
   DocumentContext,
@@ -15,9 +27,9 @@ import {
   KernelApiClient,
   normalizeDocumentTitle,
 } from "./kernel-api";
-import { buildDocumentTree } from "./document-tree";
 import {
   evaluateOperation,
+  mergeTags,
   normalizeTags,
   planTags,
   type ControlledOperation,
@@ -43,6 +55,10 @@ import type {
   NotebookSummary,
   PluginPolicy,
 } from "./types";
+import {
+  computeContentHash,
+  runWriteTransaction,
+} from "./write-transaction";
 
 const TAGGED_ONCE_ATTR = "custom-agent-access-tagged";
 const MAX_MARKDOWN_LENGTH = 1_000_000;
@@ -157,6 +173,10 @@ function delay(milliseconds: number): Promise<void> {
   });
 }
 
+function headingLike(blockType: string): boolean {
+  return /^h[1-6]$/.test(blockType);
+}
+
 function genericToolConfig(
   title: string,
   description: string,
@@ -248,9 +268,12 @@ class AgentAccessKernelPlugin {
     await this.registerDocumentTreeTool();
     await this.registerSearchTool();
     await this.registerReadTool();
+    await this.registerResolveDocumentTool();
+    await this.registerReadNoteSegmentsTool();
     await this.registerCreateTool();
     await this.registerAppendTool();
     await this.registerUpdateTool();
+    await this.registerEditBlockTool();
     await this.registerRenameTool();
     await this.registerMoveTool();
     await this.registerDeleteTool();
@@ -261,7 +284,7 @@ class AgentAccessKernelPlugin {
     await this.registerAuditTool();
 
     await this.api.logger.info(
-      `Agent Access loaded with ${this.registeredTools.length} MCP tools`,
+      `SiYuanMaster loaded with ${this.registeredTools.length} MCP tools (technical id retained as siyuan-agent-access)`,
     );
   }
 
@@ -290,11 +313,22 @@ class AgentAccessKernelPlugin {
   private status(): Record<string, unknown> {
     return {
       ready: true,
+      product: "siyuanmaster",
+      technicalId: "siyuan-agent-access",
       toolCount: this.registeredTools.length,
       accessMode: this.policy.access.mode,
       selectedNotebookCount:
         this.policy.access.selectedNotebookIds.length,
       taggingMode: this.policy.tagging.mode,
+      safety: this.policy.safety,
+      capabilities: {
+        resolveDocument: true,
+        readNoteSegments: true,
+        editBlock: true,
+        safeWriteTransaction: true,
+        permissionInheritance: this.policy.safety.permissionInheritance,
+        referenceProtection: this.policy.safety.referenceProtection,
+      },
     };
   }
 
@@ -375,10 +409,12 @@ class AgentAccessKernelPlugin {
       "documentId",
     );
     const context = await this.client.getDocumentContext(documentId);
+    // P0/P1 invariant: notebook permission applies to all descendant
+    // documents and blocks. No document-level overrides.
     if (!isNotebookAllowed(context.document.box, this.policy)) {
       throw new PolicyViolation(
         "notebook_denied",
-        "The requested document is outside the active Agent Access policy",
+        "The requested document is outside the active SiYuanMaster access boundary",
       );
     }
     return context;
@@ -583,7 +619,7 @@ class AgentAccessKernelPlugin {
     if (plan.action !== "apply") {
       return { addedTags: [], reason: plan.reason };
     }
-    const merged = normalizeTags([...state.tags, ...plan.tags]);
+    const merged = mergeTags(state.tags, plan.tags);
     const attrs: Record<string, string> = {
       tags: merged.join(","),
     };
@@ -598,8 +634,8 @@ class AgentAccessKernelPlugin {
     await this.registerTool(
       "get_policy",
       genericToolConfig(
-        "Get Agent Access Policy",
-        "Call this before any SiYuan operation. Returns the notebook boundary, operation decisions, optional tagging policy, and the accepted native MCP security boundary.",
+        "Get SiYuanMaster Access Boundary Policy",
+        "Call this before any SiYuan operation. Returns the notebook boundary, operation decisions, safety policy (snapshot, reference protection, long-document limits, block edit), optional tagging policy, and the accepted native MCP security boundary. Tool names remain under plugin__siyuan_agent_access__* while the technical plugin id is retained.",
         {
           type: "object",
           properties: {},
@@ -608,20 +644,39 @@ class AgentAccessKernelPlugin {
         true,
       ),
       async () => ({
+        product: {
+          brand: "siyuanmaster",
+          displayName: { default: "SiYuanMaster", "zh-CN": "思源大师" },
+          technicalId: "siyuan-agent-access",
+          version: "0.4.0",
+          namespace: "plugin__siyuan_agent_access__",
+        },
         access: this.policy.access,
         operations: this.policy.operations,
         tagging: this.policy.tagging,
+        safety: this.policy.safety,
+        capabilities: {
+          resolveDocument: "read-only path lookup; writes require exact IDs",
+          readNoteSegments: "outline + full-block windows with hard limits",
+          editBlock:
+            "exact block ID + expected content/hash + reference impact + Safe Write Transaction",
+          safeWriteTransaction:
+            "snapshot → confirm → recheck → execute once → readback; no auto-retry on unknown",
+          originalToolsPreserved: 16,
+          totalTools: 19,
+        },
         toolWorkflow: [
           "Call get_policy first.",
           "Use list_accessible_notebooks before choosing a notebook.",
           "Use list_document_tree for bounded structural browsing without note bodies.",
-          "Use search_notes, then read_note for focused retrieval.",
+          "Use resolve_document only to look up a human path; never write by path.",
+          "Use search_notes / read_note / read_note_segments for retrieval.",
           "For decisions marked confirm, obtain user approval before retrying with confirmed=true.",
           "In tag mode ask, pass tagging.decision='add' or 'skip' for each write.",
           "Use only plugin__siyuan_agent_access__* tools when policy enforcement is required.",
         ],
         acceptedRisk:
-          "SiYuan native /mcp uses administrator-level authentication and also exposes native high-privilege tools outside this plugin's policy.",
+          "SiYuan native /mcp uses administrator-level authentication and also exposes native high-privilege tools outside this plugin's access boundary.",
       }),
     );
   }
@@ -1121,8 +1176,8 @@ class AgentAccessKernelPlugin {
     await this.registerTool(
       "update_note",
       genericToolConfig(
-        "Replace Allowed Note Markdown",
-        "Replaces the body of an allowed document with supplied Markdown. By default this operation requires explicit user confirmation.",
+        "Replace Allowed Note Markdown (Safe Write Transaction)",
+        "Replaces the body of an allowed document with supplied Markdown. Runs through Safe Write Transaction: pre-write snapshot, confirmation when required, pre-execute state recheck, single execute, and readback verification. Audit never includes body text. By default this operation requires explicit user confirmation.",
         {
           type: "object",
           properties: {
@@ -1155,7 +1210,10 @@ class AgentAccessKernelPlugin {
             contentLength: markdown?.length,
           },
           async () => {
-            this.ensureOperation("update", confirmed);
+            // Deny is hard-stopped here; confirm is also enforced by the txn.
+            if (this.policy.operations.update === "deny") {
+              this.ensureOperation("update", confirmed);
+            }
             const context = await this.assertDocumentAllowed(
               input.documentId,
             );
@@ -1168,10 +1226,60 @@ class AgentAccessKernelPlugin {
               input.tagging,
               context.document.id,
             );
-            await this.client.updateDocument(
-              context.document.id,
-              content,
-            );
+            const requireConfirmation =
+              this.policy.operations.update === "confirm";
+            const expectedHash = await computeContentHash(content);
+            const txn = await runWriteTransaction({
+              kind: "update_note",
+              confirmed,
+              requireConfirmation,
+              expectedReadbackHash: expectedHash,
+              io: {
+                snapshot: async () => {
+                  const exported = await this.client.exportMarkdown(
+                    context.document.id,
+                  );
+                  return {
+                    hash: await computeContentHash(exported.content),
+                    updated: context.document.updated,
+                  };
+                },
+                verifyCurrent: async () => {
+                  const exported = await this.client.exportMarkdown(
+                    context.document.id,
+                  );
+                  return computeContentHash(exported.content);
+                },
+                execute: async () => {
+                  await this.client.updateDocument(
+                    context.document.id,
+                    content,
+                  );
+                },
+                readback: async () => {
+                  const exported = await this.client.exportMarkdown(
+                    context.document.id,
+                  );
+                  return computeContentHash(exported.content);
+                },
+              },
+            });
+            if (txn.state === "awaiting_confirmation") {
+              throw new PolicyViolation(
+                "confirmation_required",
+                txn.notice ??
+                  "update_note requires confirmed=true after user approval",
+              );
+            }
+            if (txn.state !== "committed") {
+              throw new PolicyViolation(
+                txn.error === "state_changed"
+                  ? "state_changed"
+                  : "invalid_request",
+                txn.notice ??
+                  `Safe Write Transaction ended in state ${txn.state}`,
+              );
+            }
             const tagResult = await this.applyTags(
               context.document.id,
               "update",
@@ -1180,7 +1288,398 @@ class AgentAccessKernelPlugin {
             return {
               documentId: context.document.id,
               updatedCharacters: content.length,
+              txnId: txn.record.id,
+              txnState: txn.state,
+              verified: true,
               ...tagResult,
+            };
+          },
+        );
+      },
+    );
+  }
+
+  private async registerResolveDocumentTool(): Promise<void> {
+    await this.registerTool(
+      "resolve_document",
+      genericToolConfig(
+        "Resolve Document Path (Read-Only Lookup)",
+        "Resolves a human-readable path such as /AI/Memory/note to document metadata inside an allowed notebook. Read-only: never mutates notes. Writes must still address targets by exact document/block ID plus expected state.",
+        {
+          type: "object",
+          properties: {
+            notebookId: {
+              type: "string",
+              description: "Allowed notebook ID that owns the path.",
+            },
+            hPath: {
+              type: "string",
+              description:
+                "Absolute human-readable path such as /AI/Memory/note.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["notebookId", "hPath"],
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const notebookId =
+          typeof input.notebookId === "string"
+            ? input.notebookId
+            : undefined;
+        return this.runTool(
+          "resolve_document",
+          true,
+          { notebookId, confirmed },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            const notebook = await this.assertNotebookAllowed(
+              input.notebookId,
+            );
+            const hPath = stringInput(input.hPath, "hPath", {
+              maxLength: 1024,
+            }).trim();
+            const resolved = await resolveDocumentPath(
+              this.client,
+              notebook.id,
+              hPath,
+            );
+            // Enforce notebook boundary again on the resolved document.
+            await this.assertDocumentAllowed(resolved.documentId);
+            return {
+              ...resolved,
+              lookupOnly: true,
+              writeByPath: false,
+            };
+          },
+        );
+      },
+    );
+  }
+
+  private async registerReadNoteSegmentsTool(): Promise<void> {
+    await this.registerTool(
+      "read_note_segments",
+      genericToolConfig(
+        "Read Note Segments (Outline + Full Blocks)",
+        "Reads an allowed note as an outline plus a hard-capped window of full display blocks. Limits come from safety.longDocument and cannot be exceeded by the caller.",
+        {
+          type: "object",
+          properties: {
+            documentId: {
+              type: "string",
+              description:
+                "Document ID or a block ID inside the target document.",
+            },
+            offset: {
+              type: "number",
+              description: "Block window start offset (0-based).",
+            },
+            limit: {
+              type: "number",
+              description:
+                "Requested block window size; clamped by policy maxBlocksPerWindow.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["documentId"],
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const documentId =
+          typeof input.documentId === "string"
+            ? input.documentId
+            : undefined;
+        return this.runTool(
+          "read_note_segments",
+          true,
+          { documentId, confirmed },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            const context = await this.assertDocumentAllowed(
+              input.documentId,
+            );
+            const limits = this.policy.safety.longDocument;
+            const offset = boundedInteger(input.offset, 0, 0, 100_000);
+            const requestedLimit = boundedInteger(
+              input.limit,
+              limits.maxBlocksPerWindow,
+              1,
+              limits.maxBlocksPerWindow,
+            );
+            const rawBlocks = await this.client.listDocumentBlocks(
+              context.document.id,
+            );
+            const blocks: BlockRow[] = rawBlocks.map((row) => {
+              const blockType =
+                row.subtype && /^h[1-6]$/.test(row.subtype)
+                  ? row.subtype
+                  : row.type;
+              const text = (row.markdown || row.content || "").slice(
+                0,
+                limits.maxCharsPerBlock,
+              );
+              return {
+                blockId: row.id,
+                blockType,
+                content: text,
+                markdown: row.markdown
+                  ? row.markdown.slice(0, limits.maxCharsPerBlock)
+                  : undefined,
+                sort: row.sort,
+              };
+            });
+            const headings = blocks.filter(
+              (block) => headingLike(block.blockType),
+            );
+            const outline = buildOutline(headings).slice(
+              0,
+              limits.maxOutlineBlocks,
+            );
+            const window = windowBlocks(blocks, offset, requestedLimit);
+            return {
+              documentId: context.document.id,
+              notebookId: context.document.box,
+              title: context.document.content,
+              hPath: context.document.hpath,
+              outline,
+              outlineTruncated: headings.length > outline.length,
+              blocks: window.page.map((block) => ({
+                blockId: block.blockId,
+                blockType: block.blockType,
+                text: blockDisplayText(block),
+                truncated:
+                  (block.markdown?.length ?? block.content.length) >=
+                  limits.maxCharsPerBlock,
+              })),
+              offset,
+              limit: requestedLimit,
+              nextOffset: window.nextOffset,
+              totalBlocks: blocks.length,
+              limits: {
+                maxBlocksPerWindow: limits.maxBlocksPerWindow,
+                maxCharsPerBlock: limits.maxCharsPerBlock,
+                maxOutlineBlocks: limits.maxOutlineBlocks,
+              },
+            };
+          },
+        );
+      },
+    );
+  }
+
+  private async registerEditBlockTool(): Promise<void> {
+    await this.registerTool(
+      "edit_block",
+      genericToolConfig(
+        "Edit Block (Exact ID + Expected State + Safe Write Transaction)",
+        "Edits one block by exact SiYuan ID. Requires expectedContent or expectedHash, reports reference impact, requires confirmation by default, snapshots before write, rechecks state, executes once, and verifies via readback. Never writes by human path. Audit never includes body text.",
+        {
+          type: "object",
+          properties: {
+            blockId: {
+              type: "string",
+              description: "Exact SiYuan block ID to edit.",
+            },
+            markdown: {
+              type: "string",
+              description: "Replacement Markdown/kramdown for the block.",
+            },
+            expectedContent: {
+              type: "string",
+              description:
+                "Expected current block content (or kramdown). Required when expectedHash is omitted and requireExpectedState is true.",
+            },
+            expectedHash: {
+              type: "string",
+              description:
+                "Optional SHA-256 hex of the current block content. Alternative to expectedContent.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["blockId", "markdown"],
+          additionalProperties: false,
+        },
+        false,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const blockId =
+          typeof input.blockId === "string" ? input.blockId : undefined;
+        const markdown =
+          typeof input.markdown === "string" ? input.markdown : undefined;
+        return this.runTool(
+          "edit_block",
+          false,
+          {
+            documentId: blockId,
+            confirmed,
+            contentLength: markdown?.length,
+          },
+          async () => {
+            if (this.policy.operations.update === "deny") {
+              this.ensureOperation("update", confirmed);
+            }
+            let writeTarget;
+            try {
+              writeTarget = parseWriteTarget(
+                stringInput(input.blockId, "blockId"),
+                typeof input.expectedHash === "string"
+                  ? input.expectedHash
+                  : undefined,
+              );
+            } catch (error) {
+              throw new PolicyViolation(
+                "invalid_request",
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+            const content = stringInput(input.markdown, "markdown", {
+              allowEmpty: true,
+              maxLength: MAX_MARKDOWN_LENGTH,
+            });
+            const context = await this.assertDocumentAllowed(
+              writeTarget.id,
+            );
+            // Block must be the exact requested ID (not only the document root).
+            if (context.requested.id !== writeTarget.id) {
+              throw new PolicyViolation(
+                "invalid_request",
+                "blockId must identify an exact existing block",
+              );
+            }
+            const currentKramdown = await this.client.getBlockKramdown(
+              writeTarget.id,
+            );
+            const currentHash = await computeContentHash(currentKramdown);
+            if (this.policy.safety.blockEdit.requireExpectedState) {
+              const expectedContent =
+                typeof input.expectedContent === "string"
+                  ? input.expectedContent
+                  : undefined;
+              if (!expectedContent && !writeTarget.expectedHash) {
+                throw new PolicyViolation(
+                  "invalid_request",
+                  "edit_block requires expectedContent or expectedHash when requireExpectedState is true",
+                );
+              }
+              if (
+                expectedContent !== undefined &&
+                expectedContent !== currentKramdown
+              ) {
+                throw new PolicyViolation(
+                  "state_changed",
+                  "expectedContent does not match the current block content",
+                );
+              }
+              if (
+                writeTarget.expectedHash &&
+                writeTarget.expectedHash !== currentHash
+              ) {
+                throw new PolicyViolation(
+                  "state_changed",
+                  "expectedHash does not match the current block content hash",
+                );
+              }
+            }
+
+            const referencing = (await this.client.listReferencingBlocks(
+              writeTarget.id,
+            )) as ReferencingBlock[];
+            const risk = classifyReferenceRisk(
+              referencing,
+              context.document.id,
+            );
+            if (
+              !referenceAllows(
+                referencing,
+                this.policy.safety.referenceProtection,
+              )
+            ) {
+              throw new PolicyViolation(
+                "operation_denied",
+                `Block is referenced by ${referencing.length} block(s); referenceProtection=deny blocks the edit`,
+              );
+            }
+            const requireConfirmation =
+              this.policy.operations.update === "confirm" ||
+              this.policy.safety.blockEdit.defaultConfirm ||
+              (this.policy.safety.referenceProtection === "warn" &&
+                referencing.length > 0);
+            const expectedHash = await computeContentHash(content);
+            const txn = await runWriteTransaction({
+              kind: "edit_block",
+              confirmed,
+              requireConfirmation,
+              expectedReadbackHash: expectedHash,
+              io: {
+                snapshot: async () => {
+                  const kramdown = await this.client.getBlockKramdown(
+                    writeTarget.id,
+                  );
+                  return {
+                    hash: await computeContentHash(kramdown),
+                    updated: context.requested.updated,
+                  };
+                },
+                verifyCurrent: async () => {
+                  const kramdown = await this.client.getBlockKramdown(
+                    writeTarget.id,
+                  );
+                  return computeContentHash(kramdown);
+                },
+                execute: async () => {
+                  await this.client.updateBlockMarkdown(
+                    writeTarget.id,
+                    content,
+                  );
+                },
+                readback: async () => {
+                  const kramdown = await this.client.getBlockKramdown(
+                    writeTarget.id,
+                  );
+                  return computeContentHash(kramdown);
+                },
+              },
+            });
+            if (txn.state === "awaiting_confirmation") {
+              throw new PolicyViolation(
+                "confirmation_required",
+                txn.notice ??
+                  `edit_block requires confirmed=true (referenceRisk=${risk}, refs=${referencing.length})`,
+              );
+            }
+            if (txn.state !== "committed") {
+              throw new PolicyViolation(
+                txn.error === "state_changed"
+                  ? "state_changed"
+                  : "invalid_request",
+                txn.notice ??
+                  `Safe Write Transaction ended in state ${txn.state}`,
+              );
+            }
+            return {
+              blockId: writeTarget.id,
+              documentId: context.document.id,
+              notebookId: context.document.box,
+              updatedCharacters: content.length,
+              referenceRisk: risk,
+              referencingCount: referencing.length,
+              referencing: referencing.map((item) => ({
+                blockId: item.blockId,
+                documentId: item.documentId,
+                notebookId: item.notebookId,
+                contentSnippet: item.contentSnippet,
+              })),
+              txnId: txn.record.id,
+              txnState: txn.state,
+              verified: true,
             };
           },
         );

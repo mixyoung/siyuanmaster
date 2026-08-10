@@ -1,0 +1,99 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import {
+  CATALOG_TOOLS,
+  ORIGINAL_TOOL_COUNT,
+  PLUGIN_NAMESPACE,
+  PLUGIN_TOOL_NAMES,
+  PRODUCT_ID,
+  PRODUCT_VERSION,
+  TECHNICAL_ID,
+  TOOL_NAMES,
+  TXN_NAME,
+} from "../src/generated/capabilities";
+import { renderCatalogModule } from "../scripts/generate-capabilities.mjs";
+
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const catalogPath = path.join(rootDir, "catalog", "capabilities.json");
+const generatedPath = path.join(
+  rootDir,
+  "src",
+  "generated",
+  "capabilities.ts",
+);
+
+const ORIGINAL_16 = [
+  "get_policy",
+  "list_accessible_notebooks",
+  "list_document_tree",
+  "search_notes",
+  "read_note",
+  "create_note",
+  "append_note",
+  "update_note",
+  "rename_note",
+  "move_note",
+  "delete_note",
+  "suggest_tags",
+  "apply_tags",
+  "prepare_summary",
+  "save_memory",
+  "get_audit_log",
+] as const;
+
+describe("capability catalog freshness and identity", () => {
+  it("keeps generated capabilities.ts fresh with the catalog", () => {
+    const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+    const rendered = renderCatalogModule(catalog);
+    const committed = readFileSync(generatedPath, "utf8");
+    expect(committed).toBe(rendered);
+  });
+
+  it("declares brand siyuanmaster with transition technical id", () => {
+    expect(PRODUCT_ID).toBe("siyuanmaster");
+    expect(TECHNICAL_ID).toBe("siyuan-agent-access");
+    expect(PRODUCT_VERSION).toBe("0.4.0");
+    expect(PLUGIN_NAMESPACE).toBe("plugin__siyuan_agent_access__");
+    expect(TXN_NAME).toBe("SafeWriteTxn");
+  });
+
+  it("exposes 19 tools including the original 16 under one namespace", () => {
+    expect(TOOL_NAMES).toHaveLength(19);
+    expect(CATALOG_TOOLS).toHaveLength(19);
+    expect(ORIGINAL_TOOL_COUNT).toBe(16);
+    for (const name of ORIGINAL_16) {
+      expect(TOOL_NAMES).toContain(name);
+    }
+    expect(TOOL_NAMES).toContain("resolve_document");
+    expect(TOOL_NAMES).toContain("read_note_segments");
+    expect(TOOL_NAMES).toContain("edit_block");
+    expect(PLUGIN_TOOL_NAMES).toHaveLength(19);
+    for (const fq of PLUGIN_TOOL_NAMES) {
+      expect(fq.startsWith("plugin__siyuan_agent_access__")).toBe(true);
+      expect(fq.startsWith("plugin__siyuanmaster__")).toBe(false);
+    }
+    // Exactly original 16 fully-qualified names remain available under the
+    // retained technical namespace (plus 3 new tools in the same ns).
+    for (const name of ORIGINAL_16) {
+      expect(PLUGIN_TOOL_NAMES).toContain(
+        `plugin__siyuan_agent_access__${name}`,
+      );
+    }
+  });
+
+  it("catalog stores only bare tool names and current namespace", () => {
+    const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+    expect(catalog.namespaces.plugin).toBe("plugin__siyuan_agent_access__");
+    expect(catalog.namespaces.legacyPlugin).toBeUndefined();
+    expect(catalog.product.technicalId).toBe("siyuan-agent-access");
+    expect(catalog.compatibility.technicalIdPolicy).toBe(
+      "retain-for-transition",
+    );
+    for (const tool of catalog.pluginTools) {
+      expect(tool.name).toMatch(/^[a-z][a-z0-9_]*$/);
+      expect(tool.legacy).toBeUndefined();
+    }
+  });
+});
