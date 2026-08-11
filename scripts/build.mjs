@@ -38,6 +38,7 @@ await build({
 });
 
 for (const name of [
+  "LICENSE",
   "plugin.json",
   "README.md",
   "README.zh-CN.md",

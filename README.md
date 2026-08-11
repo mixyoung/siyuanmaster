@@ -6,7 +6,7 @@ SiYuanMaster is a native SiYuan plugin that lets trusted local AI assistants rea
 |---|---|
 | **Brand** | SiYuanMaster / 思源大师 |
 | **Package** | `siyuanmaster` |
-| **Version** | `0.5.0` |
+| **Version** | `0.5.1` |
 | **Technical plugin ID** | `siyuanmaster` |
 | **MCP namespace** | `plugin__siyuanmaster__*` |
 | **Repository** | https://github.com/mixyoung/siyuanmaster |

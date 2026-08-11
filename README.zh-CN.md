@@ -6,7 +6,7 @@
 |---|---|
 | **品牌** | 思源大师 / SiYuanMaster |
 | **包名** | `siyuanmaster` |
-| **版本** | `0.5.0` |
+| **版本** | `0.5.1` |
 | **技术插件 ID** | `siyuanmaster` |
 | **MCP 命名空间** | `plugin__siyuanmaster__*` |
 | **仓库** | https://github.com/mixyoung/siyuanmaster |
