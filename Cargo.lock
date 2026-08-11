@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "siyuanmaster"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "siyuanmaster-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "base64",
  "hex",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "siyuanmasterd"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "serde",
  "serde_json",

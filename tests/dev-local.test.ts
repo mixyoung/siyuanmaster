@@ -451,6 +451,10 @@ describe("dev-local.ps1", () => {
     // getWorkspaceInfo before disable/swap
     expect(src).toMatch(/getWorkspaceInfo/);
     expect(src).toMatch(/before disable\/swap/i);
+    // Quarantine recovery: TOCTOU revalidation calls for failedParent (backupBase) and its parents
+    // before any New-Item/Move-Item use of failedPath.
+    expect(src).toMatch(/Assert-ExistingPathNotReparse.*failedParent.*backupBase/);
+    expect(src).toMatch(/Assert-ExistingParentsNotReparse.*failedParent/);
   });
 
   it("static: Test-ShouldReEnablePreviousPlugin truth table via pwsh", () => {
@@ -817,6 +821,90 @@ describe("dev-local.ps1", () => {
       true,
     );
     expect(combined).not.toContain("test-token-quarantine-fail");
+  });
+
+  it("successful quarantine nests failed plugin under .siyuanmaster-dev-backups (not directly in data/plugins)", async () => {
+    assertRepoDistComplete();
+    const workspace = makeTempDir("siyuanmaster-dev-local-quarantine-ok-");
+    const pluginsDir = path.join(workspace, "data", "plugins");
+    const targetDir = path.join(pluginsDir, "siyuanmaster");
+    const oldMarker = "OLD_QUARANTINE_OK_marker";
+    seedOldPlugin(targetDir, oldMarker);
+    writeWorkspaceConf(workspace, "test-token-quarantine-ok");
+
+    const stub = await startLocalStub({
+      workspaceDir: workspace,
+      enableResult: "ok",
+    });
+
+    // Fail after swap; quarantine SHOULD succeed (no TestFailQuarantine flag).
+    const result = await runDevLocalAsync(
+      [
+        "-Workspace",
+        workspace,
+        "-SkipBuild",
+        "-TestFailAfterSwap",
+        "-ApiBaseUrl",
+        stub.baseUrl,
+      ],
+      { timeoutMs: ASYNC_CHILD_TIMEOUT_MS },
+    );
+
+    const combined = `${result.stdout}\n${result.stderr}`;
+    expect(result.status, combined).not.toBe(0);
+    expect(combined).toMatch(/TestFailAfterSwap/i);
+
+    // CRITICAL: Failed plugin must NOT be a direct child of data/plugins.
+    // No .siyuanmaster-failed-* or .quarantine-* should exist at data/plugins level.
+    // This proves the failed plugin is nested somewhere else (under .siyuanmaster-dev-backups).
+    const directChildren = readdirSync(pluginsDir);
+    const failedDirect = directChildren.filter((n) =>
+      n.startsWith(".siyuanmaster-failed-") || n.startsWith(".quarantine-"),
+    );
+    expect(failedDirect, "failed plugin must not be directly under data/plugins (must be nested under .siyuanmaster-dev-backups)").toEqual([]);
+
+    // Backup root should exist (proves we had a prior install and backup was attempted).
+    const backupsRoot = path.join(pluginsDir, ".siyuanmaster-dev-backups");
+    expect(existsSync(backupsRoot), "backup root should exist").toBe(true);
+
+    const backupRuns = readdirSync(backupsRoot);
+    expect(backupRuns.length, "at least one run dir should exist under backup root").toBeGreaterThanOrEqual(1);
+
+    // Exactly one .quarantine-* entry should exist directly under backup root.
+    const quarantineRuns = backupRuns.filter((n) => n.startsWith(".quarantine-"));
+    expect(quarantineRuns.length, "exactly one .quarantine-* entry should exist under .siyuanmaster-dev-backups").toBe(1);
+
+    // That quarantine entry is a directory.
+    const quarantinePath = path.join(backupsRoot, quarantineRuns[0]!);
+    expect(existsSync(quarantinePath), "quarantine entry should be a directory").toBe(true);
+    expect(statSync(quarantinePath).isDirectory(), "quarantine entry must be a directory").toBe(true);
+
+    // Move-Item -Destination quarantinePath: plugin files land directly inside quarantinePath
+    // (the new plugin content is moved INTO quarantinePath, not into a subdir named siyuanmaster).
+    // Must contain required plugin files (proves quarantine captured the new install, not empty).
+    const quarantineEntries = readdirSync(quarantinePath);
+    expect(quarantineEntries.length, "quarantine directory should not be empty").toBeGreaterThan(0);
+    expect(quarantineEntries.includes("plugin.json"), "quarantine should contain plugin.json").toBe(true);
+    expect(quarantineEntries.includes("index.js"), "quarantine should contain index.js").toBe(true);
+
+    // Quarantined plugin is the NEW dist (not the old marker).
+    const quarantineIndex = readFileSync(path.join(quarantinePath, "index.js"), "utf8");
+    expect(quarantineIndex).not.toBe(oldMarker);
+
+    // Recovery: canonical targetDir should exist again with the old plugin restored.
+    expect(existsSync(targetDir), "target should exist after backup restoration").toBe(true);
+    expect(readFileSync(path.join(targetDir, "index.js"), "utf8"), "target should contain old marker after backup restored").toBe(oldMarker);
+
+    // Only "siyuanmaster" should be a direct-scan-visible plugin under data/plugins.
+    // Enumerate every direct child of data/plugins that contains a plugin.json.
+    const scanVisiblePlugins = readdirSync(pluginsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .filter((e) => existsSync(path.join(pluginsDir, e.name, "plugin.json")))
+      .map((e) => e.name);
+    expect(scanVisiblePlugins, "only siyuanmaster should be a direct-scan-visible plugin under data/plugins").toEqual(["siyuanmaster"]);
+
+    // Token must not appear in output.
+    expect(combined).not.toContain("test-token-quarantine-ok");
   });
 
   it("getWorkspaceInfo mismatch fails closed before disable/swap", async () => {

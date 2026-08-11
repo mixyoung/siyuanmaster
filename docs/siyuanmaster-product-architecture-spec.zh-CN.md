@@ -4,7 +4,7 @@
 >
 > - 规格版本：1.3
 > - 产品基线：`siyuan-agent-access` v0.3.0（git 基线 94af5b2）
-> - 目标版本：0.5.1
+> - 目标版本：0.5.2
 > - 编写日期：2026-08-11
 > - 一致性声明：本文档描述**本仓库当前实际实现**。所有“已实现”条目均可在仓库中找到对应代码与测试；已在思源实机验证的路径单独标注证据；其余“未接入”或“未在思源实机验证”的行为均如实标注，不冒充已实现。**不宣称**与外部参考项目（Bridge / Sisyphus）功能全量对等。
 
@@ -99,7 +99,7 @@
 | 插件存储目录 | `data/storage/petal/siyuanmaster/` | 首次加载自动复制旧 petal（新值优先、失败关闭；旧目录保留不删） |
 | Dock 类型键 | `siyuanmaster-dock` | 随技术 ID 切换（breaking） |
 | “仅首次”标记属性 | `custom-agent-access-tagged` | 保持不变 |
-| 版本 | `0.5.1` | package / plugin / catalog / Rust workspace 统一 |
+| 版本 | `0.5.2` | package / plugin / catalog / Rust workspace 统一 |
 
 ### 2.2 0.5.0 技术 ID 切换（breaking）
 
@@ -354,7 +354,7 @@ Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`me
 
 ## 15. 版本与交付物
 
-- 版本：0.5.1
+- 版本：0.5.2
 - 规格版本：1.3
 - 插件包：`package.zip`（技术目录名 `siyuanmaster`）
 - 规格：本文档
