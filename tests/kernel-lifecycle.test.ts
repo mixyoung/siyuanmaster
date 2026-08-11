@@ -41,3 +41,66 @@ describe("kernel IPluginLifecycle bindings", () => {
     expect(body).not.toMatch(/registerTool|registerPolicyTool|mcp\.register/);
   });
 });
+
+/**
+ * Structural guard: registerEditBlockTool must deny update before any
+ * document resolution or getBlockKramdown, and mark validateOnly as audit preview.
+ */
+describe("registerEditBlockTool policy-deny priority and audit metadata", () => {
+  const source = readFileSync(kernelSourcePath, "utf8");
+
+  function extractRegisterEditBlockBody(): string {
+    const start = source.indexOf("private async registerEditBlockTool");
+    expect(start).toBeGreaterThanOrEqual(0);
+    // Next private method after registerEditBlockTool
+    const next = source.indexOf("\n  private async ", start + 1);
+    expect(next).toBeGreaterThan(start);
+    return source.slice(start, next);
+  }
+
+  it("denies update before assertDocumentAllowed or getBlockKramdown", () => {
+    const body = extractRegisterEditBlockBody();
+    // Match executable statements only (ignore comment mentions).
+    const denyIdx = body.search(
+      /if\s*\(\s*this\.policy\.operations\.update\s*===\s*"deny"\s*\)/,
+    );
+    const ensureIdx = body.search(
+      /this\.ensureOperation\(\s*"update"\s*,/,
+    );
+    const assertDocIdx = body.search(
+      /await\s+this\.assertDocumentAllowed\s*\(/,
+    );
+    const kramdownIdx = body.search(
+      /this\.client\.getBlockKramdown\s*\(/,
+    );
+
+    expect(denyIdx).toBeGreaterThanOrEqual(0);
+    expect(ensureIdx).toBeGreaterThanOrEqual(0);
+    expect(assertDocIdx).toBeGreaterThanOrEqual(0);
+    expect(kramdownIdx).toBeGreaterThanOrEqual(0);
+
+    // Deny gate must precede document resolution and kramdown reads.
+    expect(denyIdx).toBeLessThan(assertDocIdx);
+    expect(ensureIdx).toBeLessThan(assertDocIdx);
+    expect(denyIdx).toBeLessThan(kramdownIdx);
+    expect(ensureIdx).toBeLessThan(kramdownIdx);
+  });
+
+  it("sets AuditEntry.preview from validateOnly without logging bodies/hashes", () => {
+    const body = extractRegisterEditBlockBody();
+    // runTool metadata object must include preview: validateOnly
+    const metaMatch = body.match(
+      /return this\.runTool\(\s*"edit_block"\s*,\s*false\s*,\s*\{([\s\S]*?)\}\s*,/,
+    );
+    expect(metaMatch).not.toBeNull();
+    const metadata = metaMatch![1];
+    expect(metadata).toMatch(/preview\s*:\s*validateOnly/);
+    // Metadata-only: no bodies, hashes, refs, or tokens.
+    expect(metadata).not.toMatch(/markdown\s*:/);
+    expect(metadata).not.toMatch(/expectedHash\s*:/);
+    expect(metadata).not.toMatch(/expectedContent\s*:/);
+    expect(metadata).not.toMatch(/body\s*:/);
+    expect(metadata).not.toMatch(/token\s*:/);
+    expect(metadata).not.toMatch(/referencing\s*:/);
+  });
+});

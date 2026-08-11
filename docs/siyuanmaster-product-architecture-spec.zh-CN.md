@@ -2,11 +2,11 @@
 
 > 唯一规格文档 · 中文 · 自包含
 >
-> - 规格版本：1.2
+> - 规格版本：1.3
 > - 产品基线：`siyuan-agent-access` v0.3.0（git 基线 94af5b2）
 > - 目标版本：0.5.0
-> - 编写日期：2026-08-10
-> - 一致性声明：本文档描述**本仓库当前实际实现**。所有“已实现”条目均可在仓库中找到对应代码与测试；所有“未接入”或“未在思源实机验证”的行为均如实标注，不冒充已实现。
+> - 编写日期：2026-08-11
+> - 一致性声明：本文档描述**本仓库当前实际实现**。所有“已实现”条目均可在仓库中找到对应代码与测试；已在思源实机验证的路径单独标注证据；其余“未接入”或“未在思源实机验证”的行为均如实标注，不冒充已实现。**不宣称**与外部参考项目（Bridge / Sisyphus）功能全量对等。
 
 ---
 
@@ -55,13 +55,13 @@
 | 来源能力 | P0/P1 现状 | 阶段 |
 |---|---|---|
 | 搜索 / 文档树浏览 | 已实现：`search_notes`、`list_document_tree`、笔记本名单 | P0 |
-| 大纲优先长文分段读 | 已实现代码路径：`read_note_segments`（未思源实机验证） | P1 |
-| 路径只读解析 | 已实现代码路径：`resolve_document`（未思源实机验证） | P1 |
-| 精确块编辑 | 已实现代码路径：`edit_block` + SafeWriteTxn（未思源实机验证） | P1 |
+| 大纲优先长文分段读 | 已实现：`read_note_segments`（含 `includeStateHash`）；专用笔记本写烟测路径已实机通过；**超长文档性能/排序未验证** | P1 |
+| 路径只读解析 | 已实现：`resolve_document`；专用笔记本写烟测路径已实机通过 | P1 |
+| 精确块编辑 | 已实现：`edit_block` + SafeWriteTxn + `validateOnly`；专用笔记本写烟测路径已实机通过（空引用场景） | P1 |
 | 多块编辑 / 表格行列编辑 | 未实现 | P2 / backlog |
 | 资源上传 / 本地文件夹链接 | 未实现 | P2 / backlog |
 | 笔记本/文档创建·重命名·移动·导出·删除 | 部分：创建/重命名/移动/删除等既有工具；复制/导出等未全量 | 部分 P0；其余 backlog |
-| 块引用检查 / 破坏性引用防护 | 已实现代码路径：`referenceProtection` warn/deny（未思源实机验证） | P1 |
+| 块引用检查 / 破坏性引用防护 | 已实现代码路径：`referenceProtection` warn/deny；**非空引用场景未思源实机验证** | P1 |
 | 写前确认 + 工作区/内容快照 | **已强制**：`snapshotBeforeWrite=true`；插件侧为内容哈希快照；**非**完整工作区级 UI 快照产品 | P0/P1 不变量 |
 | 笔记本级访问控制 | 已实现：允许/禁止名单 + 操作级 allow/confirm/deny | P0 |
 | 文档级读写/只读/隐藏 + 最近祖先继承 | **未接入 TS 插件**（Rust `core::perm` 有原语与单测） | 缺口 / P2 |
@@ -142,14 +142,14 @@
 | `permissionInheritance` 强制 true | Access Boundary | P0/P1 不变量 | `normalizePolicy` + UI 状态展示 | **强制**：存盘 false 亦归一为 true；UI **状态**非开关 |
 | 笔记本判定下沉全部子孙 | Access Boundary | P0/P1 | `assertDocumentAllowed` + `isNotebookAllowed` | **当前真实边界**：无文档级覆盖表 |
 | 文档级 rw/ro/hidden 与最近祖先继承 | Access Boundary | — | Rust `core::perm` 原语/单测 | **缺口**：TS 插件未接线 |
-| `update_note` 接入写事务 | Safe Write Transaction | P1 | `kernel.ts` | 进程内 SafeWriteTxn 尝试；需确认时返回 `confirmation_required`；重试=**新事务/新快照**（**未思源实机验证**） |
-| `edit_block` | Safe Write Transaction | P1 | `kernel.ts` + `document-access.ts` | 同上（**未思源实机验证**） |
+| `update_note` 接入写事务 | Safe Write Transaction | P1 | `kernel.ts` | 进程内 SafeWriteTxn；需确认时返回 `confirmation_required`；重试=**新事务/新快照**；专用笔记本写烟测路径已实机通过 |
+| `edit_block` | Safe Write Transaction | P1 | `kernel.ts` + `edit-block.ts` + `document-access.ts` | SafeWriteTxn + 严格 root-IAL 回读；`validateOnly` 原子预检不写；专用笔记本写烟测路径已实机通过（空引用） |
 | 跨调用持久 preview token | Safe Write Transaction | — | — | **未实现（未来工作）** |
 | 用户可见全量 diff | Safe Write Transaction | — | — | **未实现（未来工作）** |
-| 引用影响检查 | Safe Write Transaction | P1 | `document-access` + refs SQL | 已实现代码路径（**未思源实机验证**） |
-| 长文分段读取 | Access Boundary | P1 | `read_note_segments` | 已实现代码路径（**未思源实机验证**） |
-| 路径只读查找 | Access Boundary | P1 | `resolve_document` | 已实现代码路径（**未思源实机验证**） |
-| GUI 展示安全策略与 P1 状态 | Access Boundary | P1 | `src/index.ts` Dock/设置 | 已实现（**未思源实机验证 UI**）；快照/继承为状态文案 |
+| 引用影响检查 | Safe Write Transaction | P1 | `document-access` + refs SQL | 已实现代码路径；**非空引用场景未思源实机验证** |
+| 长文分段读取 | Access Boundary | P1 | `read_note_segments` | 已实现；`includeStateHash` 已实机用于写烟测 expectedHash；**超长文档性能/排序未验证** |
+| 路径只读查找 | Access Boundary | P1 | `resolve_document` | 已实现；专用笔记本写烟测路径已实机通过 |
+| GUI 展示安全策略与 P1 状态 | Access Boundary | P1 | `src/index.ts` Dock/设置 | 已实现代码路径（**GUI 视觉行为未思源实机验证**）；快照/继承为状态文案 |
 | 属性视图数据库 | — | P2 | — | 未实现（仅登记） |
 | 闪卡 | — | P2 | — | 未实现（仅登记） |
 | 完整时间线 | — | P2 | — | 未实现（仅登记） |
@@ -265,9 +265,22 @@ catalog/capabilities.json
 | 工具 | 要点 |
 |---|---|
 | `resolve_document` | 只读；`notebookId`+`hPath`；不写 |
-| `read_note_segments` | 大纲 + 窗口；limit 被 `safety.longDocument` 硬夹紧 |
-| `edit_block` | 精确 block ID；expectedContent 或 expectedHash；引用影响；默认确认；进程内 SafeWriteTxn；确认后重试=新事务/新快照 |
+| `read_note_segments` | 大纲 + 窗口；limit 被 `safety.longDocument` 硬夹紧。**`includeStateHash`**（默认 `false`）：为 `true` 时仅为**当前返回窗口**内每个块附加 `getBlockKramdown` 原文的 64 位小写 SHA-256 `stateHash`（不是 SQL markdown 文本哈希；从不对全文扫哈希）。该哈希是 `edit_block.expectedHash` 的权威来源。 |
+| `edit_block` | 精确 block ID；`expectedContent` 或 `expectedHash`（与当前 `getBlockKramdown` 原文比对/哈希）；引用影响；默认确认；进程内 SafeWriteTxn（快照→确认→复核→**只执行一次**→回读；失败不重试）。**`validateOnly=true`**：跑完整 expected-state + 引用预检后返回 `mode=validated` / `writeExecuted=false`，**永不**调用写 API（即使 `confirmed=true`）。审计 `preview`：`validateOnly` → `true`，真实写入 → `false`（仅元数据，无正文/哈希）。回读使用目标 ID 感知的 root-IAL 规范化（提交 markdown 逐字节前缀；body→IAL 边界为 rest 上恰好一个 LF/CRLF 分隔，或 expected 本身以 LF/CRLF 结尾且 rest 紧接单一 root IAL——后者把提交尾部换行当作分隔、不再额外要求；严格游标分词 IAL + 可选一个结尾 LF/CRLF；拒绝重复键/缺空白/畸形转义/同行第二 IAL 等）。确认后重试=新事务/新快照。 |
 | `update_note` | 同上：快照/确认/复核/回读；**无**跨调用 preview token；**无**用户可见全量 diff |
+
+### 10.1 思源 3.8.0-alpha.2 实机证据（已确认）
+
+在**真实本地思源 3.8.0-alpha.2** 实例上已确认：
+
+1. MCP `initialize` 协商协议 **`2025-03-26`**
+2. `tools/list`：**总计 51** 个工具，其中 **19** 个 `plugin__siyuanmaster__*`，**0** 个旧 `plugin__siyuan_agent_access__*` 遗留名
+3. 只读探测：`get_policy`、`list_accessible_notebooks`
+4. **专用可弃笔记本** 完整写烟测通过（插件工具 only；写路径从不重试）：
+   `create_note` → 可见性 `read_note` → `resolve_document` → `read_note_segments(includeStateHash=true)` → `edit_block validateOnly=true`（无写） → **一次** `edit_block` 确认提交并回读验证 → 编辑后 `read_note` → **一次** `update_note` → 最终 `read_note` → `delete_note` 清理
+5. 审计元数据可区分：`validateOnly` 预检 `preview=true` vs 真实 `edit_block` `preview=false`
+
+**仍未宣称实机验证**（见 §13）：非空块引用场景、超长文档性能/排序、GUI 视觉行为、网关出站链路；**不**宣称 Bridge / Sisyphus 功能全量对等。
 
 ---
 
@@ -306,18 +319,22 @@ Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`me
 
 ---
 
-## 13. 未在思源实机验证清单（强制如实）
+## 13. 思源实机验证状态（强制如实）
 
-以下均有代码与（或）单元测试，但**本交付未在真实思源实例上做端到端验证**：
+### 13.1 已在真实思源 3.8.0-alpha.2 本地实例确认
 
-1. 19 个 MCP 工具在真实 `/mcp` 会话中的注册与调用
-2. `update_note` / `edit_block` 与思源 markdown/kramdown 规范化对回读哈希的影响
-3. 确认重试路径下“新事务/新快照”与并发编辑的实机表现
-4. `refs` 表引用查询在真实库中的完整性
-5. `read_note_segments` 对超长文档的性能与排序
-6. Dock/设置 GUI 在真实思源前端的展示（含强制安全项状态文案）
-7. `siyuanmasterd` 作为 Agent 前置网关的实机链路
-8. 网关持管理员 Token 代理调用思源内核（**未实现出站代理**）
+见 §10.1。摘要：协议协商 `2025-03-26`；`tools/list` 51 = 19 插件 + 0 遗留；`get_policy` / `list_accessible_notebooks`；专用笔记本写烟测全路径（create → 可见性 read → resolve → segments+`includeStateHash` → `edit_block` validateOnly 不写 → 一次确认 edit 提交并验证 → post-edit read → 一次 `update_note` → final read → delete）；审计 `preview` 区分 validateOnly vs 实写。
+
+### 13.2 仍有代码/单测但未（或仅部分）实机验证
+
+1. **非空引用场景**：`referenceProtection` warn/deny 在真实库中存在引用块时的行为（写烟测为空引用）
+2. 确认重试路径下“新事务/新快照”与**并发编辑**的实机表现
+3. `refs` 表引用查询在真实库中的完整性（有引用数据时）
+4. `read_note_segments` 对**超长文档**的性能与排序
+5. Dock/设置 **GUI 视觉行为**在真实思源前端的展示（含强制安全项状态文案）
+6. `siyuanmasterd` 作为 Agent 前置网关的实机链路
+7. 网关持管理员 Token 代理调用思源内核（**未实现出站代理**）
+8. 其余未出现在 §13.1 写烟测路径中的工具组合与边界条件
 
 ---
 
@@ -338,7 +355,7 @@ Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`me
 ## 15. 版本与交付物
 
 - 版本：0.5.0
-- 规格版本：1.2
+- 规格版本：1.3
 - 插件包：`package.zip`（技术目录名 `siyuanmaster`）
 - 规格：本文档
 - 不提交密钥；`.gitignore` 含 `target/`、`.umadev/`、`output/`；保留 `Cargo.lock` 与生产规格

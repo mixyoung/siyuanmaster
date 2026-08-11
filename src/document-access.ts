@@ -174,3 +174,78 @@ export function parseWriteTarget(
   }
   return { id, expectedHash };
 }
+
+/** 64-char lowercase hex SHA-256 digest (state / expected content hash). */
+export const STATE_HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+/** Default concurrency for post-window getBlockKramdown state hashing. */
+export const STATE_HASH_CONCURRENCY = 8;
+
+export function isStateHash(value: unknown): value is string {
+  return typeof value === "string" && STATE_HASH_PATTERN.test(value);
+}
+
+/**
+ * Bounded concurrent map. Caps in-flight work so a page of up to ~200 blocks
+ * never fans out as an unbounded Promise.all of getBlockKramdown calls.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) {
+    return [];
+  }
+  const limit = Math.max(1, Math.min(Math.floor(concurrency), items.length));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) {
+        return;
+      }
+      results[index] = await mapper(items[index]!, index);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: limit }, () => worker()),
+  );
+  return results;
+}
+
+export interface SegmentBlockView {
+  blockId: string;
+  blockType: string;
+  text: string;
+  truncated: boolean;
+  stateHash?: string;
+}
+
+/**
+ * After windowing only: attach exact kramdown state hashes to the returned
+ * page blocks. Never hashes the full document list. Uses getBlockKramdown
+ * (not SQL markdown/content) via the injected reader.
+ */
+export async function attachBlockStateHashes(
+  blocks: readonly SegmentBlockView[],
+  getBlockKramdown: (blockId: string) => Promise<string>,
+  computeHash: (content: string) => Promise<string>,
+  concurrency: number = STATE_HASH_CONCURRENCY,
+): Promise<SegmentBlockView[]> {
+  return mapWithConcurrency(blocks, concurrency, async (block) => {
+    const kramdown = await getBlockKramdown(block.blockId);
+    const stateHash = await computeHash(kramdown);
+    return {
+      blockId: block.blockId,
+      blockType: block.blockType,
+      text: block.text,
+      truncated: block.truncated,
+      stateHash,
+    };
+  });
+}

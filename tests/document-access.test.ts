@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import {
+  attachBlockStateHashes,
   blockDisplayText,
   buildOutline,
   classifyReferenceRisk,
+  isStateHash,
+  mapWithConcurrency,
   parseWriteTarget,
   referenceAllows,
   resolveDocumentPath,
@@ -10,7 +14,13 @@ import {
   windowBlocks,
   type BlockRow,
   type DocumentLookupClient,
+  type SegmentBlockView,
 } from "../src/document-access";
+import { computeContentHash } from "../src/write-transaction";
+
+function nodeSha256Hex(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
 
 const rows: BlockRow[] = [
   { blockId: "20260101000000-aaaaaaa", blockType: "h1", content: "Title", sort: 1 },
@@ -140,5 +150,86 @@ describe("write targets and references", () => {
   it("bounds snippets without returning full bodies", () => {
     expect(snippet("a".repeat(500), 20).endsWith("…")).toBe(true);
     expect(snippet("a".repeat(500), 20).length).toBeLessThanOrEqual(21);
+  });
+});
+
+describe("mapWithConcurrency", () => {
+  it("preserves order and bounds in-flight work", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const items = Array.from({ length: 20 }, (_, i) => i);
+    const results = await mapWithConcurrency(items, 3, async (item) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+      return item * 2;
+    });
+    expect(results).toEqual(items.map((i) => i * 2));
+    expect(peak).toBeLessThanOrEqual(3);
+  });
+
+  it("returns empty for empty input without calling mapper", async () => {
+    const mapper = vi.fn(async () => 1);
+    await expect(mapWithConcurrency([], 8, mapper)).resolves.toEqual([]);
+    expect(mapper).not.toHaveBeenCalled();
+  });
+});
+
+describe("attachBlockStateHashes", () => {
+  const page: SegmentBlockView[] = [
+    {
+      blockId: "20260101000000-aaaaaaa",
+      blockType: "p",
+      text: "sql-display-text",
+      truncated: false,
+    },
+    {
+      blockId: "20260101000000-bbbbbbb",
+      blockType: "p",
+      text: "other-sql",
+      truncated: false,
+    },
+  ];
+
+  it("hashes getBlockKramdown output, not SQL display text", async () => {
+    const kramdownById: Record<string, string> = {
+      "20260101000000-aaaaaaa": "exact kramdown A",
+      "20260101000000-bbbbbbb": "exact kramdown B",
+    };
+    const getBlockKramdown = vi.fn(async (id: string) => kramdownById[id] ?? "");
+    const hashed = await attachBlockStateHashes(
+      page,
+      getBlockKramdown,
+      computeContentHash,
+      2,
+    );
+    expect(getBlockKramdown).toHaveBeenCalledTimes(2);
+    expect(getBlockKramdown).toHaveBeenCalledWith("20260101000000-aaaaaaa");
+    expect(getBlockKramdown).toHaveBeenCalledWith("20260101000000-bbbbbbb");
+    expect(hashed[0]?.stateHash).toBe(nodeSha256Hex("exact kramdown A"));
+    expect(hashed[1]?.stateHash).toBe(nodeSha256Hex("exact kramdown B"));
+    // Must not equal hash of SQL/display text
+    expect(hashed[0]?.stateHash).not.toBe(nodeSha256Hex("sql-display-text"));
+    expect(isStateHash(hashed[0]?.stateHash)).toBe(true);
+    // Display fields unchanged; no raw kramdown body added
+    expect(hashed[0]).toMatchObject({
+      blockId: "20260101000000-aaaaaaa",
+      text: "sql-display-text",
+      truncated: false,
+    });
+    expect(hashed[0]).not.toHaveProperty("kramdown");
+    expect(hashed[0]).not.toHaveProperty("content");
+  });
+
+  it("only touches the provided window (caller must not pass full list)", async () => {
+    const getBlockKramdown = vi.fn(async () => "k");
+    await attachBlockStateHashes(
+      page.slice(0, 1),
+      getBlockKramdown,
+      computeContentHash,
+    );
+    expect(getBlockKramdown).toHaveBeenCalledTimes(1);
+    expect(getBlockKramdown).toHaveBeenCalledWith("20260101000000-aaaaaaa");
   });
 });

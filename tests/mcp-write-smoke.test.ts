@@ -3,24 +3,35 @@ import {
   ARTIFACT_POSSIBLY_CREATED_SIGNAL,
   assertCreateResultMatch,
   assertDeleted,
+  assertEditBlockCommitted,
+  assertEditBlockValidated,
   assertNotebookAccessible,
   assertPluginDirectStructuredContent,
   assertPluginOkEnvelope,
   assertReadContainsMarker,
+  assertReadHasHPath,
+  assertReadNoteSegmentsMatch,
   assertReadVisibleMatch,
+  assertResolveDocumentMatch,
+  assertStateHash,
   assertSiyuanId,
   assertUpdateCommitted,
   assertWriteOpsPermitted,
   buildLifecycleArgs,
   DEFAULT_VISIBILITY_DELAY_MS,
   DEFAULT_VISIBILITY_MAX_ATTEMPTS,
+  findUniqueExactMarkerBlock,
   generateSmokeIdentity,
   isSiyuanId,
+  isStateHash,
   main,
   parseCliArgs,
   parseVisibilityReadEnvelope,
+  POST_EDIT_VISIBILITY_TIMEOUT_MESSAGE,
   runMcpWriteSmoke,
+  SEGMENTS_OVER_LIMIT_REQUEST,
   SIYUAN_ID_PATTERN,
+  STATE_HASH_PATTERN,
   VISIBILITY_TIMEOUT_MESSAGE,
 } from "../scripts/mcp-write-smoke.mjs";
 
@@ -62,12 +73,19 @@ const FQ_19 = CATALOG_19.pluginTools.map((t) => `${PLUGIN_NS}${t.name}`);
 // Strict SiYuan ids: /^\d{14}-[a-z0-9]{7}$/ (7-char suffix)
 const NOTEBOOK_ID = "20240101120000-nbok001";
 const DOC_ID = "20240101120100-docsmok";
+const BLOCK_ID = "20240101120200-blksmok";
+const BLOCK_ID_OTHER = "20240101120300-blkothr";
 const INVALID_DOC_ID = "20240101120100-toolong1"; // 8-char suffix — not valid
 const TITLE = "mcp-write-smoke-fixed-title";
 const BODY_MARKER = "mcp-write-smoke-marker-fixed";
+const EDIT_MARKER = `${BODY_MARKER}-edit`;
+const H_PATH = "/mcp-write-smoke/fixed-path";
 const TOKEN = "write-smoke-test-token-value-abcdefgh";
 const URL = "http://127.0.0.1:6806/mcp";
 const SESSION = "write-smoke-session-1";
+const MAX_BLOCKS_PER_WINDOW = 50;
+/** Fixed 64-char lowercase hex digest standing in for getBlockKramdown hash. */
+const STATE_HASH = "aa".repeat(32);
 
 function mockHeaders(map: Record<string, string | null> = {}) {
   return {
@@ -109,7 +127,10 @@ function okEnvelope(result: Record<string, unknown>) {
 }
 
 /** Real get_policy shape: structuredContent is the policy object directly. */
-function directPolicyContent(operations: Record<string, string>) {
+function directPolicyContent(
+  operations: Record<string, string>,
+  safety: Record<string, unknown> = {},
+) {
   return {
     isError: false,
     content: [{ type: "text", text: "DO_NOT_PARSE_CONTENT_TEXT_SECRET" }],
@@ -122,7 +143,7 @@ function directPolicyContent(operations: Record<string, string>) {
       operations,
       access: { mode: "allowlist", selectedNotebookIds: [NOTEBOOK_ID] },
       tagging: { mode: "off" },
-      safety: {},
+      safety,
     },
   };
 }
@@ -148,6 +169,8 @@ type WriteFetchOpts = {
   sessionId?: string | null;
   capture?: Capture;
   operations?: Record<string, string>;
+  /** Extra safety fields merged into direct get_policy structuredContent.safety */
+  safety?: Record<string, unknown>;
   notebooks?: Array<{ id: string; name?: string }> | "omit" | "not-array";
   /**
    * get_policy structuredContent modes (default = real direct policy object).
@@ -194,11 +217,65 @@ type WriteFetchOpts = {
     | "ok-false"
     | "malformed";
   /**
-   * Post-update verification read_note only (after update has been called).
-   * Readiness (pre-update) uses visibility* options.
+   * Final verification read_note only (after update has been called).
+   * Visibility (pre-edit) uses visibility* options.
+   * Post-edit reads (after edit, before update) use postEditRead* options.
    */
-  readResult?: "ok" | "missing-marker" | "no-content" | "ok-false";
+  readResult?: "ok" | "missing-marker" | "no-content" | "ok-false" | "no-hpath";
   deleteResult?: "ok" | "not-deleted" | "ok-false" | "fail-once-then-ok";
+  resolveResult?:
+    | "ok"
+    | "ok-false"
+    | "malformed"
+    | "mismatch-doc"
+    | "mismatch-notebook"
+    | "mismatch-title"
+    | "mismatch-hpath"
+    | "lookup-false"
+    | "write-by-path-true";
+  segmentsResult?:
+    | "ok"
+    | "ok-false"
+    | "malformed"
+    | "mismatch-doc"
+    | "mismatch-notebook"
+    | "mismatch-title"
+    | "mismatch-hpath"
+    | "no-clamp"
+    | "missing-target"
+    | "duplicate-target"
+    | "truncated-target"
+    | "invalid-block-id"
+    | "missing-state-hash"
+    | "invalid-state-hash";
+  /** validateOnly=true edit_block outcome */
+  editValidateResult?:
+    | "ok"
+    | "ok-false"
+    | "malformed"
+    | "missing-mode"
+    | "write-executed-true"
+    | "validated-false"
+    | "mismatch-block"
+    | "mismatch-doc"
+    | "mismatch-notebook"
+    | "bad-refs"
+    | "nonempty-refs"
+    | "risk-not-none"
+    | "has-txn-fields";
+  /** validateOnly=false confirmed=true edit_block outcome */
+  editResult?:
+    | "ok"
+    | "ok-false"
+    | "malformed"
+    | "txn-not-committed"
+    | "verified-false"
+    | "mismatch-block"
+    | "mismatch-doc"
+    | "mismatch-notebook"
+    | "bad-refs"
+    | "nonempty-refs"
+    | "risk-not-none";
   /** Fail a specific bare tool name after create with envelope error */
   failTool?: string | null;
   /** After how many delete_note calls should cleanup fail (for fail-once) */
@@ -225,6 +302,10 @@ type WriteFetchOpts = {
     | "mismatch-notebook"
     | "mismatch-title"
     | "missing-marker";
+  /** First N post-edit reads return {ok:false} then succeed. */
+  postEditFailCount?: number;
+  /** Post-edit reads always return {ok:false}. */
+  postEditNever?: boolean;
 };
 
 function makeWriteFetch(opts: WriteFetchOpts = {}) {
@@ -237,6 +318,7 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
     delete: "confirm",
     append: "allow",
   };
+  const safety = opts.safety ?? {};
   const notebooks =
     opts.notebooks === undefined
       ? [{ id: NOTEBOOK_ID, name: "Disposable Secret Notebook" }]
@@ -244,13 +326,83 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
 
   let deleteCalls = 0;
   let updateCalled = false;
+  let editCommitted = false;
+  let editValidateCalls = 0;
+  let editWriteCalls = 0;
   let visibilityReadCount = 0;
+  let postEditReadCount = 0;
 
   const visibilitySuccessResult = (): Record<string, unknown> => ({
     documentId: DOC_ID,
     notebookId: NOTEBOOK_ID,
     title: TITLE,
+    hPath: H_PATH,
     content: `# mcp-write-smoke\n\n${BODY_MARKER}\n`,
+  });
+
+  /** Final read after update_note — proves update body + identity. */
+  const finalReadResult = (): Record<string, unknown> => ({
+    documentId: DOC_ID,
+    notebookId: NOTEBOOK_ID,
+    title: TITLE,
+    hPath: H_PATH,
+    content: `# mcp-write-smoke\n\n${BODY_MARKER}\n\nupdated\n`,
+  });
+
+  /** Post-edit read before update — proves edit marker only. */
+  const postEditReadResult = (): Record<string, unknown> => ({
+    documentId: DOC_ID,
+    notebookId: NOTEBOOK_ID,
+    title: TITLE,
+    hPath: H_PATH,
+    content: `# mcp-write-smoke\n\n${EDIT_MARKER}\n`,
+  });
+
+  // Segments run on the created body (before update), so no "updated" block.
+  const defaultSegmentsResult = (): Record<string, unknown> => ({
+    documentId: DOC_ID,
+    notebookId: NOTEBOOK_ID,
+    title: TITLE,
+    hPath: H_PATH,
+    outline: [],
+    outlineTruncated: false,
+    blocks: [
+      {
+        blockId: "20240101120201-heading",
+        blockType: "h1",
+        text: "mcp-write-smoke",
+        truncated: false,
+        stateHash: "bb".repeat(32),
+      },
+      {
+        blockId: BLOCK_ID,
+        blockType: "p",
+        text: BODY_MARKER,
+        truncated: false,
+        stateHash: STATE_HASH,
+      },
+    ],
+    offset: 0,
+    limit: MAX_BLOCKS_PER_WINDOW,
+    nextOffset: null,
+    totalBlocks: 2,
+    limits: {
+      maxBlocksPerWindow: MAX_BLOCKS_PER_WINDOW,
+      maxCharsPerBlock: 8000,
+      maxOutlineBlocks: 500,
+    },
+  });
+
+  const defaultValidatedResult = (): Record<string, unknown> => ({
+    mode: "validated",
+    validated: true,
+    writeExecuted: false,
+    blockId: BLOCK_ID,
+    documentId: DOC_ID,
+    notebookId: NOTEBOOK_ID,
+    referenceRisk: "none",
+    referencingCount: 0,
+    referencing: [],
   });
 
   return async (url: string, init?: RequestInit) => {
@@ -416,7 +568,7 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
           });
         }
         // Default / "direct": real kernel get_policy shape
-        return toolCallResponse(body.id, directPolicyContent(operations));
+        return toolCallResponse(body.id, directPolicyContent(operations, safety));
       }
       if (bare === "list_accessible_notebooks") {
         if (opts.listEnvelope && opts.listEnvelope !== "ok") {
@@ -538,8 +690,8 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
         );
       }
       if (bare === "read_note") {
-        // Pre-update: readiness / visibility poll only (create→index wait).
-        if (!updateCalled) {
+        // Phase 1: visibility / readiness poll only (create→index wait; before edit).
+        if (!editCommitted && !updateCalled) {
           visibilityReadCount += 1;
           const mode = opts.visibilityResult;
           if (mode === "malformed" || mode === "text-only" || mode === "missing") {
@@ -579,6 +731,7 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
                 documentId: DOC_ID,
                 notebookId: NOTEBOOK_ID,
                 title: TITLE,
+                hPath: H_PATH,
                 content: "# mcp-write-smoke\n\nno marker here\n",
               }),
             );
@@ -594,7 +747,20 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
           return toolCallResponse(body.id, okEnvelope(visibilitySuccessResult()));
         }
 
-        // Post-update verification read
+        // Phase 2: post-edit reads (after confirmed edit_block, before update)
+        if (editCommitted && !updateCalled) {
+          postEditReadCount += 1;
+          if (
+            opts.postEditNever === true ||
+            (typeof opts.postEditFailCount === "number" &&
+              postEditReadCount <= opts.postEditFailCount)
+          ) {
+            return envelopeMode("ok-false", {});
+          }
+          return toolCallResponse(body.id, okEnvelope(postEditReadResult()));
+        }
+
+        // Phase 3: final verification read (after update_note)
         if (opts.failTool === "read_note") {
           return envelopeMode("ok-false", {});
         }
@@ -608,6 +774,7 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
               documentId: DOC_ID,
               notebookId: NOTEBOOK_ID,
               title: TITLE,
+              hPath: H_PATH,
               content: "# mcp-write-smoke\n\nno marker here\n",
             }),
           );
@@ -615,15 +782,414 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
         if (opts.readResult === "no-content") {
           return toolCallResponse(body.id, okEnvelope({ documentId: DOC_ID }));
         }
-        return toolCallResponse(
-          body.id,
-          okEnvelope({
-            content: `# mcp-write-smoke\n\n${BODY_MARKER}\n\nupdated\n`,
-            documentId: DOC_ID,
-            notebookId: NOTEBOOK_ID,
-            title: TITLE,
-          }),
-        );
+        if (opts.readResult === "no-hpath") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              documentId: DOC_ID,
+              notebookId: NOTEBOOK_ID,
+              title: TITLE,
+              content: `# mcp-write-smoke\n\n${BODY_MARKER}\n\nupdated\n`,
+            }),
+          );
+        }
+        return toolCallResponse(body.id, okEnvelope(finalReadResult()));
+      }
+      if (bare === "resolve_document") {
+        if (opts.failTool === "resolve_document") {
+          return envelopeMode("ok-false", {});
+        }
+        if (opts.resolveResult === "ok-false") {
+          return envelopeMode("ok-false", {});
+        }
+        if (opts.resolveResult === "malformed") {
+          return envelopeMode("malformed", {});
+        }
+        const base = {
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          title: TITLE,
+          hPath: H_PATH,
+          path: "/fake/path.sy",
+          updated: "20240101120000",
+          lookupOnly: true,
+          writeByPath: false,
+        };
+        if (opts.resolveResult === "mismatch-doc") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, documentId: "20240101999999-wrongid" }),
+          );
+        }
+        if (opts.resolveResult === "mismatch-notebook") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, notebookId: "20240101999999-wrongnb" }),
+          );
+        }
+        if (opts.resolveResult === "mismatch-title") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, title: "wrong-title" }),
+          );
+        }
+        if (opts.resolveResult === "mismatch-hpath") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, hPath: "/wrong/path" }),
+          );
+        }
+        if (opts.resolveResult === "lookup-false") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, lookupOnly: false }),
+          );
+        }
+        if (opts.resolveResult === "write-by-path-true") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, writeByPath: true }),
+          );
+        }
+        return toolCallResponse(body.id, okEnvelope(base));
+      }
+      if (bare === "read_note_segments") {
+        if (opts.failTool === "read_note_segments") {
+          return envelopeMode("ok-false", {});
+        }
+        if (opts.segmentsResult === "ok-false") {
+          return envelopeMode("ok-false", {});
+        }
+        if (opts.segmentsResult === "malformed") {
+          return envelopeMode("malformed", {});
+        }
+        const base = defaultSegmentsResult();
+        if (opts.segmentsResult === "mismatch-doc") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, documentId: "20240101999999-wrongid" }),
+          );
+        }
+        if (opts.segmentsResult === "mismatch-notebook") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, notebookId: "20240101999999-wrongnb" }),
+          );
+        }
+        if (opts.segmentsResult === "mismatch-title") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, title: "wrong-title" }),
+          );
+        }
+        if (opts.segmentsResult === "mismatch-hpath") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...base, hPath: "/wrong/path" }),
+          );
+        }
+        if (opts.segmentsResult === "no-clamp") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...base,
+              limit: SEGMENTS_OVER_LIMIT_REQUEST,
+            }),
+          );
+        }
+        if (opts.segmentsResult === "missing-target") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...base,
+              blocks: [
+                {
+                  blockId: BLOCK_ID,
+                  blockType: "p",
+                  text: "no marker here",
+                  truncated: false,
+                  stateHash: STATE_HASH,
+                },
+              ],
+            }),
+          );
+        }
+        if (opts.segmentsResult === "duplicate-target") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...base,
+              blocks: [
+                {
+                  blockId: BLOCK_ID,
+                  blockType: "p",
+                  text: BODY_MARKER,
+                  truncated: false,
+                  stateHash: STATE_HASH,
+                },
+                {
+                  blockId: BLOCK_ID_OTHER,
+                  blockType: "p",
+                  text: BODY_MARKER,
+                  truncated: false,
+                  stateHash: STATE_HASH,
+                },
+              ],
+            }),
+          );
+        }
+        if (opts.segmentsResult === "truncated-target") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...base,
+              blocks: [
+                {
+                  blockId: BLOCK_ID,
+                  blockType: "p",
+                  text: BODY_MARKER,
+                  truncated: true,
+                  stateHash: STATE_HASH,
+                },
+              ],
+            }),
+          );
+        }
+        if (opts.segmentsResult === "invalid-block-id") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...base,
+              blocks: [
+                {
+                  blockId: "not-a-valid-id",
+                  blockType: "p",
+                  text: BODY_MARKER,
+                  truncated: false,
+                  stateHash: STATE_HASH,
+                },
+              ],
+            }),
+          );
+        }
+        if (opts.segmentsResult === "missing-state-hash") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...base,
+              blocks: [
+                {
+                  blockId: BLOCK_ID,
+                  blockType: "p",
+                  text: BODY_MARKER,
+                  truncated: false,
+                },
+              ],
+            }),
+          );
+        }
+        if (opts.segmentsResult === "invalid-state-hash") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...base,
+              blocks: [
+                {
+                  blockId: BLOCK_ID,
+                  blockType: "p",
+                  text: BODY_MARKER,
+                  truncated: false,
+                  stateHash: "NOT_A_VALID_HASH",
+                },
+              ],
+            }),
+          );
+        }
+        return toolCallResponse(body.id, okEnvelope(base));
+      }
+      if (bare === "edit_block") {
+        const args = body.params?.arguments ?? {};
+        const validateOnly = args.validateOnly === true;
+
+        if (validateOnly) {
+          editValidateCalls += 1;
+          if (opts.failTool === "edit_block") {
+            return envelopeMode("ok-false", {});
+          }
+          if (opts.editValidateResult === "ok-false") {
+            return envelopeMode("ok-false", {});
+          }
+          if (opts.editValidateResult === "malformed") {
+            return envelopeMode("malformed", {});
+          }
+          const baseValidated = defaultValidatedResult();
+          if (opts.editValidateResult === "missing-mode") {
+            const { mode: _m, ...rest } = baseValidated;
+            return toolCallResponse(body.id, okEnvelope(rest));
+          }
+          if (opts.editValidateResult === "write-executed-true") {
+            return toolCallResponse(
+              body.id,
+              okEnvelope({ ...baseValidated, writeExecuted: true }),
+            );
+          }
+          if (opts.editValidateResult === "validated-false") {
+            return toolCallResponse(
+              body.id,
+              okEnvelope({ ...baseValidated, validated: false }),
+            );
+          }
+          if (opts.editValidateResult === "mismatch-block") {
+            return toolCallResponse(
+              body.id,
+              okEnvelope({ ...baseValidated, blockId: BLOCK_ID_OTHER }),
+            );
+          }
+          if (opts.editValidateResult === "mismatch-doc") {
+            return toolCallResponse(
+              body.id,
+              okEnvelope({
+                ...baseValidated,
+                documentId: "20240101999999-wrongid",
+              }),
+            );
+          }
+          if (opts.editValidateResult === "mismatch-notebook") {
+            return toolCallResponse(
+              body.id,
+              okEnvelope({
+                ...baseValidated,
+                notebookId: "20240101999999-wrongnb",
+              }),
+            );
+          }
+          if (
+            opts.editValidateResult === "bad-refs" ||
+            opts.editValidateResult === "nonempty-refs"
+          ) {
+            return toolCallResponse(
+              body.id,
+              okEnvelope({
+                ...baseValidated,
+                referencingCount: 1,
+                referencing: [
+                  {
+                    blockId: BLOCK_ID_OTHER,
+                    documentId: DOC_ID,
+                    notebookId: NOTEBOOK_ID,
+                    contentSnippet: "SECRET_REF",
+                  },
+                ],
+              }),
+            );
+          }
+          if (opts.editValidateResult === "risk-not-none") {
+            return toolCallResponse(
+              body.id,
+              okEnvelope({ ...baseValidated, referenceRisk: "critical" }),
+            );
+          }
+          if (opts.editValidateResult === "has-txn-fields") {
+            return toolCallResponse(
+              body.id,
+              okEnvelope({
+                ...baseValidated,
+                txnState: "committed",
+                verified: true,
+              }),
+            );
+          }
+          return toolCallResponse(body.id, okEnvelope(baseValidated));
+        }
+
+        // Real write path (validateOnly=false) — exactly once in happy path
+        editWriteCalls += 1;
+        editCommitted = true;
+        if (opts.failTool === "edit_block") {
+          return envelopeMode("ok-false", {});
+        }
+        if (opts.editResult === "ok-false") {
+          return envelopeMode("ok-false", {});
+        }
+        if (opts.editResult === "malformed") {
+          return envelopeMode("malformed", {});
+        }
+        const committedBase = {
+          blockId: BLOCK_ID,
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          updatedCharacters: EDIT_MARKER.length,
+          referenceRisk: "none",
+          referencingCount: 0,
+          referencing: [],
+          txnId: "txn-secret-must-not-log",
+          txnState: "committed",
+          verified: true,
+        };
+        if (opts.editResult === "txn-not-committed") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...committedBase, txnState: "failed" }),
+          );
+        }
+        if (opts.editResult === "verified-false") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...committedBase, verified: false }),
+          );
+        }
+        if (opts.editResult === "mismatch-block") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...committedBase, blockId: BLOCK_ID_OTHER }),
+          );
+        }
+        if (opts.editResult === "mismatch-doc") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...committedBase,
+              documentId: "20240101999999-wrongid",
+            }),
+          );
+        }
+        if (opts.editResult === "mismatch-notebook") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...committedBase,
+              notebookId: "20240101999999-wrongnb",
+            }),
+          );
+        }
+        if (
+          opts.editResult === "bad-refs" ||
+          opts.editResult === "nonempty-refs"
+        ) {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({
+              ...committedBase,
+              referenceRisk: "critical",
+              referencingCount: 1,
+              referencing: [
+                {
+                  blockId: BLOCK_ID_OTHER,
+                  documentId: "20240101999999-otherd",
+                  notebookId: "20240101999999-othern",
+                  contentSnippet: "SECRET_REF_SNIPPET",
+                },
+              ],
+            }),
+          );
+        }
+        if (opts.editResult === "risk-not-none") {
+          return toolCallResponse(
+            body.id,
+            okEnvelope({ ...committedBase, referenceRisk: "some" }),
+          );
+        }
+        return toolCallResponse(body.id, okEnvelope(committedBase));
       }
       if (bare === "delete_note") {
         deleteCalls += 1;
@@ -898,6 +1464,10 @@ describe("mcp-write-smoke pure helpers", () => {
       title: TITLE,
       bodyMarker: BODY_MARKER,
       documentId: DOC_ID,
+      hPath: H_PATH,
+      blockId: BLOCK_ID,
+      expectedHash: STATE_HASH,
+      editMarker: EDIT_MARKER,
     });
     expect(args.create.tagging).toEqual({ decision: "skip", tags: [] });
     expect(args.create).toMatchObject({
@@ -914,11 +1484,367 @@ describe("mcp-write-smoke pure helpers", () => {
     });
     expect(args.update.tagging).toEqual({ decision: "skip", tags: [] });
     expect(args.read).toEqual({ documentId: DOC_ID, confirmed: true });
+    expect(args.resolve).toEqual({
+      notebookId: NOTEBOOK_ID,
+      hPath: H_PATH,
+      confirmed: true,
+    });
+    expect(args.segments).toEqual({
+      documentId: DOC_ID,
+      offset: 0,
+      limit: SEGMENTS_OVER_LIMIT_REQUEST,
+      includeStateHash: true,
+      confirmed: true,
+    });
+    expect(args.editValidate).toEqual({
+      blockId: BLOCK_ID,
+      markdown: EDIT_MARKER,
+      expectedHash: STATE_HASH,
+      validateOnly: true,
+      confirmed: false,
+    });
+    expect(args.edit).toEqual({
+      blockId: BLOCK_ID,
+      markdown: EDIT_MARKER,
+      expectedHash: STATE_HASH,
+      validateOnly: false,
+      confirmed: true,
+    });
+    // validateOnly and actual write share blockId/markdown/expectedHash
+    expect(args.editValidate.blockId).toBe(args.edit.blockId);
+    expect(args.editValidate.markdown).toBe(args.edit.markdown);
+    expect(args.editValidate.expectedHash).toBe(args.edit.expectedHash);
     expect(args.delete).toEqual({
       documentId: DOC_ID,
       expectedTitle: TITLE,
       confirmed: true,
     });
+  });
+
+  it("isStateHash / assertStateHash enforce 64-char lowercase hex", () => {
+    expect(STATE_HASH_PATTERN.test(STATE_HASH)).toBe(true);
+    expect(isStateHash(STATE_HASH)).toBe(true);
+    expect(isStateHash("AA".repeat(32))).toBe(false);
+    expect(isStateHash("not-a-hash")).toBe(false);
+    expect(isStateHash("")).toBe(false);
+    expect(assertStateHash(STATE_HASH)).toBe(STATE_HASH);
+    expect(() => assertStateHash("bad")).toThrow(/64-character lowercase hex/);
+  });
+
+  it("assertResolveDocumentMatch checks identity + lookup-only flags", () => {
+    const good = {
+      documentId: DOC_ID,
+      notebookId: NOTEBOOK_ID,
+      title: TITLE,
+      hPath: H_PATH,
+      lookupOnly: true,
+      writeByPath: false,
+    };
+    expect(() =>
+      assertResolveDocumentMatch(good, {
+        documentId: DOC_ID,
+        notebookId: NOTEBOOK_ID,
+        title: TITLE,
+        hPath: H_PATH,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertResolveDocumentMatch(
+        { ...good, lookupOnly: false },
+        {
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          title: TITLE,
+          hPath: H_PATH,
+        },
+      ),
+    ).toThrow(/lookupOnly/);
+    expect(() =>
+      assertResolveDocumentMatch(
+        { ...good, writeByPath: true },
+        {
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          title: TITLE,
+          hPath: H_PATH,
+        },
+      ),
+    ).toThrow(/writeByPath/);
+  });
+
+  it("assertReadNoteSegmentsMatch enforces clamp + block id format", () => {
+    const good = {
+      documentId: DOC_ID,
+      notebookId: NOTEBOOK_ID,
+      title: TITLE,
+      hPath: H_PATH,
+      limit: MAX_BLOCKS_PER_WINDOW,
+      blocks: [
+        {
+          blockId: BLOCK_ID,
+          blockType: "p",
+          text: BODY_MARKER,
+          truncated: false,
+        },
+      ],
+      limits: { maxBlocksPerWindow: MAX_BLOCKS_PER_WINDOW },
+    };
+    expect(() =>
+      assertReadNoteSegmentsMatch(good, {
+        documentId: DOC_ID,
+        notebookId: NOTEBOOK_ID,
+        title: TITLE,
+        hPath: H_PATH,
+        requestedLimit: SEGMENTS_OVER_LIMIT_REQUEST,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertReadNoteSegmentsMatch(
+        { ...good, limit: SEGMENTS_OVER_LIMIT_REQUEST },
+        {
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          title: TITLE,
+          hPath: H_PATH,
+          requestedLimit: SEGMENTS_OVER_LIMIT_REQUEST,
+        },
+      ),
+    ).toThrow(/exceeds limits|not clamped/);
+    expect(() =>
+      assertReadNoteSegmentsMatch(
+        {
+          ...good,
+          blocks: [
+            {
+              blockId: "bad-id",
+              blockType: "p",
+              text: BODY_MARKER,
+              truncated: false,
+            },
+          ],
+        },
+        {
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          title: TITLE,
+          hPath: H_PATH,
+          requestedLimit: SEGMENTS_OVER_LIMIT_REQUEST,
+        },
+      ),
+    ).toThrow(/blockId invalid/);
+  });
+
+  it("findUniqueExactMarkerBlock requires unique untruncated exact match + stateHash", () => {
+    expect(
+      findUniqueExactMarkerBlock(
+        [
+          {
+            blockId: BLOCK_ID,
+            blockType: "p",
+            text: `  ${BODY_MARKER}  `,
+            truncated: false,
+            stateHash: STATE_HASH,
+          },
+        ],
+        BODY_MARKER,
+      ),
+    ).toEqual({
+      blockId: BLOCK_ID,
+      text: `  ${BODY_MARKER}  `,
+      truncated: false,
+      stateHash: STATE_HASH,
+    });
+    expect(() =>
+      findUniqueExactMarkerBlock(
+        [
+          {
+            blockId: BLOCK_ID,
+            blockType: "p",
+            text: BODY_MARKER,
+            truncated: true,
+            stateHash: STATE_HASH,
+          },
+        ],
+        BODY_MARKER,
+      ),
+    ).toThrow(/not found/);
+    expect(() =>
+      findUniqueExactMarkerBlock(
+        [
+          {
+            blockId: BLOCK_ID,
+            blockType: "p",
+            text: BODY_MARKER,
+            truncated: false,
+            // missing stateHash
+          },
+        ],
+        BODY_MARKER,
+      ),
+    ).toThrow(/stateHash/);
+    expect(() =>
+      findUniqueExactMarkerBlock(
+        [
+          {
+            blockId: BLOCK_ID,
+            blockType: "p",
+            text: BODY_MARKER,
+            truncated: false,
+            stateHash: "NOT_HEX",
+          },
+        ],
+        BODY_MARKER,
+      ),
+    ).toThrow(/stateHash/);
+    expect(() =>
+      findUniqueExactMarkerBlock(
+        [
+          {
+            blockId: BLOCK_ID,
+            blockType: "p",
+            text: BODY_MARKER,
+            truncated: false,
+            stateHash: STATE_HASH,
+          },
+          {
+            blockId: BLOCK_ID_OTHER,
+            blockType: "p",
+            text: BODY_MARKER,
+            truncated: false,
+            stateHash: STATE_HASH,
+          },
+        ],
+        BODY_MARKER,
+      ),
+    ).toThrow(/not unique/);
+    expect(() =>
+      findUniqueExactMarkerBlock(
+        [
+          {
+            blockId: "bad",
+            blockType: "p",
+            text: BODY_MARKER,
+            truncated: false,
+            stateHash: STATE_HASH,
+          },
+        ],
+        BODY_MARKER,
+      ),
+    ).toThrow(/invalid format/);
+  });
+
+  it("assertEditBlockValidated enforces mode/ids/empty refs and rejects write fields", () => {
+    const good = {
+      mode: "validated",
+      validated: true,
+      writeExecuted: false,
+      blockId: BLOCK_ID,
+      documentId: DOC_ID,
+      notebookId: NOTEBOOK_ID,
+      referenceRisk: "none",
+      referencingCount: 0,
+      referencing: [],
+    };
+    expect(() =>
+      assertEditBlockValidated(good, {
+        blockId: BLOCK_ID,
+        documentId: DOC_ID,
+        notebookId: NOTEBOOK_ID,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertEditBlockValidated(
+        { ...good, mode: "committed" },
+        { blockId: BLOCK_ID, documentId: DOC_ID, notebookId: NOTEBOOK_ID },
+      ),
+    ).toThrow(/mode must be validated/);
+    expect(() =>
+      assertEditBlockValidated(
+        { ...good, writeExecuted: true },
+        { blockId: BLOCK_ID, documentId: DOC_ID, notebookId: NOTEBOOK_ID },
+      ),
+    ).toThrow(/writeExecuted must be false/);
+    expect(() =>
+      assertEditBlockValidated(
+        { ...good, referencingCount: 1, referencing: [{ blockId: BLOCK_ID_OTHER }] },
+        { blockId: BLOCK_ID, documentId: DOC_ID, notebookId: NOTEBOOK_ID },
+      ),
+    ).toThrow(/referencingCount must be 0/);
+    expect(() =>
+      assertEditBlockValidated(
+        { ...good, txnState: "committed", verified: true },
+        { blockId: BLOCK_ID, documentId: DOC_ID, notebookId: NOTEBOOK_ID },
+      ),
+    ).toThrow(/unexpected write txn fields/);
+  });
+
+  it("assertEditBlockCommitted checks ids/txn/empty refs without logging secrets", () => {
+    expect(() =>
+      assertEditBlockCommitted(
+        {
+          blockId: BLOCK_ID,
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          txnState: "committed",
+          verified: true,
+          referenceRisk: "none",
+          referencingCount: 0,
+          referencing: [],
+        },
+        { blockId: BLOCK_ID, documentId: DOC_ID, notebookId: NOTEBOOK_ID },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertEditBlockCommitted(
+        {
+          blockId: BLOCK_ID,
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          txnState: "failed",
+          verified: true,
+          referenceRisk: "none",
+          referencingCount: 0,
+          referencing: [],
+        },
+        { blockId: BLOCK_ID, documentId: DOC_ID, notebookId: NOTEBOOK_ID },
+      ),
+    ).toThrow(/txnState is not committed/);
+    expect(() =>
+      assertEditBlockCommitted(
+        {
+          blockId: BLOCK_ID,
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          txnState: "committed",
+          verified: true,
+          referenceRisk: "critical",
+          referencingCount: 0,
+          referencing: [],
+        },
+        { blockId: BLOCK_ID, documentId: DOC_ID, notebookId: NOTEBOOK_ID },
+      ),
+    ).toThrow(/referenceRisk is not none/);
+    expect(() =>
+      assertEditBlockCommitted(
+        {
+          blockId: BLOCK_ID,
+          documentId: DOC_ID,
+          notebookId: NOTEBOOK_ID,
+          txnState: "committed",
+          verified: true,
+          referenceRisk: "none",
+          referencingCount: 0,
+          referencing: [{ blockId: BLOCK_ID_OTHER }],
+        },
+        { blockId: BLOCK_ID, documentId: DOC_ID, notebookId: NOTEBOOK_ID },
+      ),
+    ).toThrow(/referencing must be empty/);
+  });
+
+  it("assertReadHasHPath requires non-empty hPath", () => {
+    expect(assertReadHasHPath({ hPath: H_PATH })).toBe(H_PATH);
+    expect(() => assertReadHasHPath({ hPath: "  " })).toThrow(/hPath missing/);
+    expect(() => assertReadHasHPath({})).toThrow(/hPath missing/);
   });
 
   it("assertCreateResultMatch requires valid SiYuan documentId and exact notebookId/title", () => {
@@ -1142,12 +2068,14 @@ describe("mcp-write-smoke pure helpers", () => {
     expect(() => assertDeleted({ deleted: true })).not.toThrow();
   });
 
-  it("generateSmokeIdentity returns unique title and bodyMarker", () => {
+  it("generateSmokeIdentity returns unique title, bodyMarker, and editMarker", () => {
     const a = generateSmokeIdentity(1, () => Buffer.from("aaaaaaaa"));
     const b = generateSmokeIdentity(2, () => Buffer.from("bbbbbbbb"));
     expect(a.title).toMatch(/^mcp-write-smoke-1-/);
     expect(a.bodyMarker).toMatch(/^mcp-write-smoke-marker-1-/);
+    expect(a.editMarker).toMatch(/^mcp-write-smoke-edit-marker-1-/);
     expect(a.title).not.toBe(b.title);
+    expect(a.editMarker).not.toBe(b.editMarker);
   });
 });
 
@@ -1540,7 +2468,7 @@ describe("mcp-write-smoke orchestration", () => {
     }
   });
 
-  it("happy path: create → readiness read(s) → update → verification read → delete", async () => {
+  it("happy path: create → visibility → resolve → segments → validateOnly → edit → post-edit → update → final read → delete", async () => {
     const capture: Capture = {
       methods: [],
       toolNames: [],
@@ -1556,30 +2484,35 @@ describe("mcp-write-smoke orchestration", () => {
     expect(result.ok).toBe(true);
     expect(result.lifecycle).toEqual({
       create: true,
+      resolve: true,
+      segments: true,
+      editValidation: true,
+      edit: true,
+      postEditRead: true,
       update: true,
-      read: true,
+      finalRead: true,
       delete: true,
     });
     expect(result.cleanupAttempted).toBe(false);
 
-    // methods: init, initialized, tools/list, then 7 tool calls
-    // (get_policy, list, create, readiness read, update, verify read, delete)
+    // methods: init, initialized, tools/list, then 12 tool calls
     expect(capture.methods).toEqual([
       "initialize",
       "notifications/initialized",
       "tools/list",
-      "tools/call",
-      "tools/call",
-      "tools/call",
-      "tools/call",
-      "tools/call",
-      "tools/call",
-      "tools/call",
+      ...Array.from({ length: 12 }, () => "tools/call"),
     ]);
+    // Order: preflight → create → visibility → resolve → segments →
+    // validateOnly → edit → post-edit read → update → final read → delete
     expect(capture.toolNames).toEqual([
       `${PLUGIN_NS}get_policy`,
       `${PLUGIN_NS}list_accessible_notebooks`,
       `${PLUGIN_NS}create_note`,
+      `${PLUGIN_NS}read_note`,
+      `${PLUGIN_NS}resolve_document`,
+      `${PLUGIN_NS}read_note_segments`,
+      `${PLUGIN_NS}edit_block`,
+      `${PLUGIN_NS}edit_block`,
       `${PLUGIN_NS}read_note`,
       `${PLUGIN_NS}update_note`,
       `${PLUGIN_NS}read_note`,
@@ -1595,19 +2528,43 @@ describe("mcp-write-smoke orchestration", () => {
       capture.toolNames.indexOf(`${PLUGIN_NS}list_accessible_notebooks`),
     ).toBeLessThan(createIdx);
 
-    // readiness read before update; verification read after update
+    const visibilityIdx = capture.toolNames.indexOf(`${PLUGIN_NS}read_note`);
+    const resolveIdx = capture.toolNames.indexOf(`${PLUGIN_NS}resolve_document`);
+    const segmentsIdx = capture.toolNames.indexOf(
+      `${PLUGIN_NS}read_note_segments`,
+    );
+    const editIdxs = capture.toolNames
+      .map((n, i) => ({ n, i }))
+      .filter(({ n }) => n === `${PLUGIN_NS}edit_block`)
+      .map(({ i }) => i);
+    const postEditIdx = capture.toolNames.indexOf(
+      `${PLUGIN_NS}read_note`,
+      editIdxs[1]! + 1,
+    );
     const updateIdx = capture.toolNames.indexOf(`${PLUGIN_NS}update_note`);
-    const readinessIdx = capture.toolNames.indexOf(`${PLUGIN_NS}read_note`);
-    const verifyIdx = capture.toolNames.lastIndexOf(`${PLUGIN_NS}read_note`);
-    expect(readinessIdx).toBeGreaterThan(createIdx);
-    expect(readinessIdx).toBeLessThan(updateIdx);
-    expect(verifyIdx).toBeGreaterThan(updateIdx);
+    const finalReadIdx = capture.toolNames.indexOf(
+      `${PLUGIN_NS}read_note`,
+      updateIdx + 1,
+    );
+    expect(visibilityIdx).toBeGreaterThan(createIdx);
+    expect(resolveIdx).toBeGreaterThan(visibilityIdx);
+    expect(segmentsIdx).toBeGreaterThan(resolveIdx);
+    expect(editIdxs).toHaveLength(2);
+    expect(editIdxs[0]).toBeGreaterThan(segmentsIdx);
+    expect(editIdxs[1]).toBe(editIdxs[0]! + 1);
+    expect(postEditIdx).toBe(editIdxs[1]! + 1);
+    expect(updateIdx).toBeGreaterThan(postEditIdx);
+    expect(finalReadIdx).toBeGreaterThan(updateIdx);
 
     const expected = buildLifecycleArgs({
       notebookId: NOTEBOOK_ID,
       title: TITLE,
       bodyMarker: BODY_MARKER,
       documentId: DOC_ID,
+      hPath: H_PATH,
+      blockId: BLOCK_ID,
+      expectedHash: STATE_HASH,
+      editMarker: EDIT_MARKER,
     });
     // create args (documentId null path uses same create shape)
     expect(capture.toolArgs[2]).toEqual(
@@ -1621,14 +2578,44 @@ describe("mcp-write-smoke orchestration", () => {
     expect(capture.toolArgs[2]).toMatchObject({
       tagging: { decision: "skip", tags: [] },
     });
-    // readiness + verification reads share the same read args shape
+    // visibility → resolve → segments → validateOnly → edit → post-edit →
+    // update → final read → delete
     expect(capture.toolArgs[3]).toEqual(expected.read);
-    expect(capture.toolArgs[4]).toEqual(expected.update);
-    expect(capture.toolArgs[4]).toMatchObject({
+    expect(capture.toolArgs[4]).toEqual(expected.resolve);
+    expect(capture.toolArgs[5]).toEqual(expected.segments);
+    expect(capture.toolArgs[5]).toMatchObject({
+      limit: SEGMENTS_OVER_LIMIT_REQUEST,
+      includeStateHash: true,
+    });
+    // validateOnly then actual write: identical blockId/markdown/expectedHash
+    expect(capture.toolArgs[6]).toEqual(expected.editValidate);
+    expect(capture.toolArgs[7]).toEqual(expected.edit);
+    expect(capture.toolArgs[6]).toMatchObject({
+      blockId: BLOCK_ID,
+      markdown: EDIT_MARKER,
+      expectedHash: STATE_HASH,
+      validateOnly: true,
+      confirmed: false,
+    });
+    expect(capture.toolArgs[7]).toMatchObject({
+      blockId: BLOCK_ID,
+      markdown: EDIT_MARKER,
+      expectedHash: STATE_HASH,
+      validateOnly: false,
+      confirmed: true,
+    });
+    expect(capture.toolArgs[6].blockId).toBe(capture.toolArgs[7].blockId);
+    expect(capture.toolArgs[6].markdown).toBe(capture.toolArgs[7].markdown);
+    expect(capture.toolArgs[6].expectedHash).toBe(
+      capture.toolArgs[7].expectedHash,
+    );
+    expect(capture.toolArgs[8]).toEqual(expected.read);
+    expect(capture.toolArgs[9]).toEqual(expected.update);
+    expect(capture.toolArgs[9]).toMatchObject({
       tagging: { decision: "skip", tags: [] },
     });
-    expect(capture.toolArgs[5]).toEqual(expected.read);
-    expect(capture.toolArgs[6]).toEqual(expected.delete);
+    expect(capture.toolArgs[10]).toEqual(expected.read);
+    expect(capture.toolArgs[11]).toEqual(expected.delete);
 
     // writes never retried
     expect(
@@ -1637,6 +2624,9 @@ describe("mcp-write-smoke orchestration", () => {
     expect(
       capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
     ).toHaveLength(1);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+    ).toHaveLength(2); // validateOnly once + write once
     expect(
       capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
     ).toHaveLength(1);
@@ -1648,12 +2638,23 @@ describe("mcp-write-smoke orchestration", () => {
     const joined = logs.join("\n");
     expect(joined).toMatch(/mcp-write-smoke PASS/);
     expect(joined).toMatch(/visibility read_note ok/);
+    expect(joined).toMatch(/resolve_document ok/);
+    expect(joined).toMatch(/read_note_segments ok/);
+    expect(joined).toMatch(/edit_block validateOnly ok/);
+    expect(joined).toMatch(/edit_block ok/);
+    expect(joined).toMatch(/post-edit read_note ok/);
+    expect(joined).toMatch(/update_note ok/);
+    expect(joined).toMatch(/final read_note ok/);
     expect(joined).not.toContain(TOKEN);
     expect(joined).not.toContain(SESSION);
     expect(joined).not.toContain(NOTEBOOK_ID);
     expect(joined).not.toContain(DOC_ID);
+    expect(joined).not.toContain(BLOCK_ID);
     expect(joined).not.toContain(TITLE);
     expect(joined).not.toContain(BODY_MARKER);
+    expect(joined).not.toContain(EDIT_MARKER);
+    expect(joined).not.toContain(H_PATH);
+    expect(joined).not.toContain("txn-secret");
     expect(joined).not.toContain("Disposable Secret Notebook");
     expect(joined).not.toContain("DO_NOT_PARSE_CONTENT_TEXT_SECRET");
     expect(joined).not.toContain("SECRET_ERROR");
@@ -1895,18 +2896,20 @@ describe("mcp-write-smoke orchestration", () => {
       expect(
         capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
       ).toHaveLength(1);
-      // readiness read before update; verification read not reached
-      expect(capture.toolNames).toContain(`${PLUGIN_NS}read_note`);
+      // visibility + post-edit before update; final read not reached
       expect(
         capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
+      expect(
+        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      ).toHaveLength(2);
       expect(
         capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
       ).toHaveLength(1);
     }
   });
 
-  it("read marker check fails and triggers exactly one cleanup", async () => {
+  it("final read marker check fails and triggers exactly one cleanup", async () => {
     const capture: Capture = {
       methods: [],
       toolNames: [],
@@ -1923,10 +2926,13 @@ describe("mcp-write-smoke orchestration", () => {
     expect(
       capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
     ).toHaveLength(1);
-    // readiness + verification reads; only verification fails marker
+    // visibility + post-edit + final; only final fails marker
     expect(
       capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+    ).toHaveLength(1);
   });
 
   it("exactly one cleanup after post-create failure; no second delete", async () => {
@@ -1947,11 +2953,17 @@ describe("mcp-write-smoke orchestration", () => {
       (n) => n === `${PLUGIN_NS}delete_note`,
     );
     expect(deletes).toHaveLength(1);
-    // lifecycle: create → readiness read → update fail → cleanup delete
+    // create → visibility → resolve → segments → validateOnly → edit →
+    // post-edit → update fail → cleanup delete
     expect(capture.toolNames).toEqual([
       `${PLUGIN_NS}get_policy`,
       `${PLUGIN_NS}list_accessible_notebooks`,
       `${PLUGIN_NS}create_note`,
+      `${PLUGIN_NS}read_note`,
+      `${PLUGIN_NS}resolve_document`,
+      `${PLUGIN_NS}read_note_segments`,
+      `${PLUGIN_NS}edit_block`,
+      `${PLUGIN_NS}edit_block`,
       `${PLUGIN_NS}read_note`,
       `${PLUGIN_NS}update_note`,
       `${PLUGIN_NS}delete_note`,
@@ -2115,7 +3127,7 @@ describe("mcp-write-smoke orchestration", () => {
     expect(logs.some((l) => l === "cleanup delete_note ok")).toBe(false);
   });
 
-  it("eventual visibility: ok=false readiness polls then succeeds before update", async () => {
+  it("eventual visibility: ok=false readiness polls then succeeds before resolve/edit/update", async () => {
     const capture: Capture = {
       methods: [],
       toolNames: [],
@@ -2139,24 +3151,29 @@ describe("mcp-write-smoke orchestration", () => {
     const readNames = capture.toolNames.filter(
       (n) => n === `${PLUGIN_NS}read_note`,
     );
-    // 3 not-yet-visible + 1 success readiness + 1 verification
-    expect(readNames).toHaveLength(5);
+    // 3 not-yet-visible + 1 success visibility + 1 post-edit + 1 final
+    expect(readNames).toHaveLength(6);
     expect(sleepCalls).toEqual([7, 7, 7]);
     const createIdx = capture.toolNames.indexOf(`${PLUGIN_NS}create_note`);
-    const updateIdx = capture.toolNames.indexOf(`${PLUGIN_NS}update_note`);
-    const readinessReads = capture.toolNames
+    const resolveIdx = capture.toolNames.indexOf(
+      `${PLUGIN_NS}resolve_document`,
+    );
+    const visibilityReads = capture.toolNames
       .map((n, i) => ({ n, i }))
       .filter(
         ({ n, i }) =>
-          n === `${PLUGIN_NS}read_note` && i > createIdx && i < updateIdx,
+          n === `${PLUGIN_NS}read_note` && i > createIdx && i < resolveIdx,
       );
-    expect(readinessReads).toHaveLength(4);
+    expect(visibilityReads).toHaveLength(4);
     expect(
       capture.toolNames.filter((n) => n === `${PLUGIN_NS}create_note`),
     ).toHaveLength(1);
     expect(
       capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
     ).toHaveLength(1);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+    ).toHaveLength(2);
     expect(logs.join("\n")).toMatch(/visibility read_note ok/);
     expect(logs.join("\n")).not.toContain("SECRET_ERROR");
   });
@@ -2307,12 +3324,15 @@ describe("mcp-write-smoke orchestration", () => {
       capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
     ).toHaveLength(1);
     expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+    ).toHaveLength(2);
+    expect(
       capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
     ).toHaveLength(1);
-    // readiness polls only (no verification after failed update)
+    // 2 not-yet + 1 visibility success + 1 post-edit (no final after failed update)
     expect(
       capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
   });
 
   it("no native bypass endpoint is ever requested", async () => {
@@ -2334,5 +3354,388 @@ describe("mcp-write-smoke orchestration", () => {
     for (const name of capture.toolNames) {
       expect(name.startsWith(PLUGIN_NS)).toBe(true);
     }
+  });
+
+  it("update=allow + defaultConfirm=false still completes lifecycle; validateOnly never writes", async () => {
+    const capture: Capture = {
+      methods: [],
+      toolNames: [],
+      toolArgs: [],
+      bodies: [],
+      urls: [],
+      headerSnapshots: [],
+    };
+    const { result, logs } = await runWrite(
+      makeWriteFetch({
+        capture,
+        operations: {
+          create: "allow",
+          update: "allow",
+          read: "allow",
+          delete: "confirm",
+        },
+        safety: { blockEdit: { defaultConfirm: false } },
+      }) as typeof fetch,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.lifecycle).toMatchObject({
+      create: true,
+      editValidation: true,
+      edit: true,
+      delete: true,
+    });
+    expect(capture.toolNames).toContain(`${PLUGIN_NS}create_note`);
+    const editArgs = capture.toolArgs.filter(
+      (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+    ) as Array<{
+      blockId?: string;
+      markdown?: string;
+      expectedHash?: string;
+      validateOnly?: boolean;
+      confirmed?: boolean;
+    }>;
+    expect(editArgs).toHaveLength(2);
+    expect(editArgs[0]).toMatchObject({
+      validateOnly: true,
+      confirmed: false,
+      expectedHash: STATE_HASH,
+    });
+    expect(editArgs[1]).toMatchObject({
+      validateOnly: false,
+      confirmed: true,
+      expectedHash: STATE_HASH,
+    });
+    expect(editArgs[0].blockId).toBe(editArgs[1].blockId);
+    expect(editArgs[0].markdown).toBe(editArgs[1].markdown);
+    expect(editArgs[0].expectedHash).toBe(editArgs[1].expectedHash);
+    expect(logs.join("\n")).toMatch(/edit_block validateOnly ok/);
+    expect(logs.join("\n")).not.toMatch(/confirm gate|confirmation_required|editProbe/);
+  });
+
+  it("allows create when defaultConfirm=true even if update is allow", async () => {
+    const capture: Capture = {
+      methods: [],
+      toolNames: [],
+      toolArgs: [],
+      bodies: [],
+      urls: [],
+      headerSnapshots: [],
+    };
+    const { result } = await runWrite(
+      makeWriteFetch({
+        capture,
+        operations: {
+          create: "allow",
+          update: "allow",
+          read: "allow",
+          delete: "confirm",
+        },
+        safety: { blockEdit: { defaultConfirm: true } },
+      }) as typeof fetch,
+    );
+    expect(result.ok).toBe(true);
+    expect(capture.toolNames).toContain(`${PLUGIN_NS}create_note`);
+    expect(capture.toolNames).toContain(`${PLUGIN_NS}edit_block`);
+    const editArgs = capture.toolArgs.filter(
+      (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+    ) as Array<{ validateOnly?: boolean; confirmed?: boolean }>;
+    expect(editArgs).toHaveLength(2);
+    expect(editArgs.map((a) => a.validateOnly)).toEqual([true, false]);
+    expect(editArgs.map((a) => a.confirmed)).toEqual([false, true]);
+  });
+
+  it("resolve/segments field mismatches fail before update and cleanup exactly once", async () => {
+    for (const resolveResult of [
+      "mismatch-doc",
+      "mismatch-notebook",
+      "mismatch-title",
+      "mismatch-hpath",
+      "lookup-false",
+      "write-by-path-true",
+    ] as const) {
+      const capture: Capture = {
+        methods: [],
+        toolNames: [],
+        toolArgs: [],
+        bodies: [],
+        urls: [],
+        headerSnapshots: [],
+      };
+      await expect(
+        runWrite(makeWriteFetch({ capture, resolveResult }) as typeof fetch),
+      ).rejects.toThrow(/mismatch|lookupOnly|writeByPath/);
+      // Failure before update: update_note must not have been called
+      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}read_note_segments`);
+      expect(
+        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      ).toHaveLength(1);
+      expect(
+        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      ).toHaveLength(0);
+    }
+
+    for (const segmentsResult of [
+      "mismatch-doc",
+      "mismatch-notebook",
+      "mismatch-title",
+      "mismatch-hpath",
+      "no-clamp",
+      "missing-target",
+      "duplicate-target",
+      "truncated-target",
+      "invalid-block-id",
+    ] as const) {
+      const capture: Capture = {
+        methods: [],
+        toolNames: [],
+        toolArgs: [],
+        bodies: [],
+        urls: [],
+        headerSnapshots: [],
+      };
+      await expect(
+        runWrite(makeWriteFetch({ capture, segmentsResult }) as typeof fetch),
+      ).rejects.toThrow(
+        /mismatch|not clamped|exceeds|not found|not unique|invalid format/,
+      );
+      expect(capture.toolNames).toContain(`${PLUGIN_NS}resolve_document`);
+      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(
+        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      ).toHaveLength(1);
+      expect(
+        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      ).toHaveLength(0);
+    }
+  });
+
+  it("edit_block validateOnly strict result matrix fails closed and cleans up once", async () => {
+    for (const editValidateResult of [
+      "ok-false",
+      "malformed",
+      "missing-mode",
+      "write-executed-true",
+      "validated-false",
+      "mismatch-block",
+      "mismatch-doc",
+      "mismatch-notebook",
+      "bad-refs",
+      "nonempty-refs",
+      "risk-not-none",
+      "has-txn-fields",
+    ] as const) {
+      const capture: Capture = {
+        methods: [],
+        toolNames: [],
+        toolArgs: [],
+        bodies: [],
+        urls: [],
+        headerSnapshots: [],
+      };
+      try {
+        await runWrite(
+          makeWriteFetch({ capture, editValidateResult }) as typeof fetch,
+        );
+        expect.fail(
+          `should throw for editValidateResult=${editValidateResult}`,
+        );
+      } catch (err) {
+        const msg = String((err as Error).message);
+        expect(msg).toMatch(
+          /mode|validated|writeExecuted|mismatch|referenceRisk|referencing|write txn fields|ok=false|structuredContent|malformed/,
+        );
+        expect(msg).not.toContain("SECRET_ERROR");
+        expect(msg).not.toContain(BODY_MARKER);
+        expect(msg).not.toContain(BLOCK_ID);
+        expect(msg).not.toMatch(/confirmation_required|editProbe|confirm gate/);
+      }
+      // Only the validateOnly call — never proceeds to write or update
+      expect(
+        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      ).toHaveLength(1);
+      const editArgs = capture.toolArgs.filter(
+        (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+      ) as Array<{ validateOnly?: boolean; confirmed?: boolean }>;
+      expect(editArgs[0]).toMatchObject({
+        validateOnly: true,
+        confirmed: false,
+      });
+      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(
+        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      ).toHaveLength(1);
+    }
+  });
+
+  it("confirmed=true edit validates txn/ids/refs and never retries", async () => {
+    for (const editResult of [
+      "txn-not-committed",
+      "verified-false",
+      "mismatch-block",
+      "mismatch-doc",
+      "mismatch-notebook",
+      "bad-refs",
+      "nonempty-refs",
+      "risk-not-none",
+      "ok-false",
+      "malformed",
+    ] as const) {
+      const capture: Capture = {
+        methods: [],
+        toolNames: [],
+        toolArgs: [],
+        bodies: [],
+        urls: [],
+        headerSnapshots: [],
+      };
+      await expect(
+        runWrite(makeWriteFetch({ capture, editResult }) as typeof fetch),
+      ).rejects.toThrow(
+        /txnState|verified|mismatch|referenceRisk|referencing|ok=false|structuredContent|malformed/,
+      );
+      expect(
+        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      ).toHaveLength(2); // validateOnly ok + one failed write
+      const editArgs = capture.toolArgs.filter(
+        (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+      ) as Array<{
+        validateOnly?: boolean;
+        confirmed?: boolean;
+        expectedHash?: string;
+      }>;
+      expect(editArgs[0]).toMatchObject({
+        validateOnly: true,
+        confirmed: false,
+      });
+      expect(editArgs[1]).toMatchObject({
+        validateOnly: false,
+        confirmed: true,
+      });
+      expect(editArgs[0].expectedHash).toBe(editArgs[1].expectedHash);
+      // Failure before update
+      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(
+        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      ).toHaveLength(1);
+    }
+  });
+
+  it("post-edit read polls for replacement marker then updates and deletes once", async () => {
+    const capture: Capture = {
+      methods: [],
+      toolNames: [],
+      toolArgs: [],
+      bodies: [],
+      urls: [],
+      headerSnapshots: [],
+    };
+    const sleepCalls: number[] = [];
+    const { result, logs } = await runWrite(
+      makeWriteFetch({ capture, postEditFailCount: 2 }) as typeof fetch,
+      {
+        visibilityMaxAttempts: 5,
+        visibilityDelayMs: 3,
+        sleep: async (ms: number) => {
+          sleepCalls.push(ms);
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    // 1 visibility + 2 not-yet post-edit + 1 post-edit success + 1 final
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+    ).toHaveLength(5);
+    expect(sleepCalls).toEqual([3, 3]);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+    ).toHaveLength(2);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+    ).toHaveLength(1);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+    ).toHaveLength(1);
+    expect(logs.join("\n")).toMatch(/post-edit read_note ok/);
+    expect(logs.join("\n")).toMatch(/update_note ok/);
+    expect(logs.join("\n")).toMatch(/final read_note ok/);
+    expect(logs.join("\n")).not.toContain(EDIT_MARKER);
+  });
+
+  it("post-edit visibility timeout cleans up once without write retries", async () => {
+    const capture: Capture = {
+      methods: [],
+      toolNames: [],
+      toolArgs: [],
+      bodies: [],
+      urls: [],
+      headerSnapshots: [],
+    };
+    const maxAttempts = 3;
+    try {
+      await runWrite(
+        makeWriteFetch({ capture, postEditNever: true }) as typeof fetch,
+        {
+          visibilityMaxAttempts: maxAttempts,
+          visibilityDelayMs: 0,
+          sleep: async () => {},
+        },
+      );
+      expect.fail("should throw");
+    } catch (err) {
+      const msg = String((err as Error).message);
+      expect(msg).toBe(POST_EDIT_VISIBILITY_TIMEOUT_MESSAGE);
+      expect(msg).not.toContain(EDIT_MARKER);
+      expect(msg).not.toContain(TOKEN);
+    }
+    // visibility(1) + post-edit polls(maxAttempts); update never reached
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+    ).toHaveLength(1 + maxAttempts);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+    ).toHaveLength(2);
+    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+    ).toHaveLength(1);
+  });
+
+  it("all write tools are called at most once on the success path", async () => {
+    const capture: Capture = {
+      methods: [],
+      toolNames: [],
+      toolArgs: [],
+      bodies: [],
+      urls: [],
+      headerSnapshots: [],
+    };
+    await runWrite(makeWriteFetch({ capture }) as typeof fetch);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}create_note`),
+    ).toHaveLength(1);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+    ).toHaveLength(1);
+    // validateOnly + actual write are two intentional distinct calls, each once
+    const editArgs = capture.toolArgs.filter(
+      (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+    ) as Array<{
+      confirmed?: boolean;
+      validateOnly?: boolean;
+      expectedHash?: string;
+      blockId?: string;
+      markdown?: string;
+    }>;
+    expect(editArgs).toHaveLength(2);
+    expect(editArgs.map((a) => a.validateOnly)).toEqual([true, false]);
+    expect(editArgs.map((a) => a.confirmed)).toEqual([false, true]);
+    expect(editArgs[0].blockId).toBe(editArgs[1].blockId);
+    expect(editArgs[0].markdown).toBe(editArgs[1].markdown);
+    expect(editArgs[0].expectedHash).toBe(editArgs[1].expectedHash);
+    expect(editArgs[0].expectedHash).toBe(STATE_HASH);
+    expect(
+      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+    ).toHaveLength(1);
   });
 });

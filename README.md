@@ -87,8 +87,8 @@ All tools are registered as `plugin__siyuanmaster__<name>`.
 | Tool | Role |
 |---|---|
 | `resolve_document` | Read-only lookup by notebook + human path (`hPath`); writes still require exact IDs |
-| `read_note_segments` | Outline + hard-capped full-block windows for long notes |
-| `edit_block` | Exact block ID, expected content/hash, reference impact, Safe Write Transaction |
+| `read_note_segments` | Outline + hard-capped full-block windows for long notes. Optional `includeStateHash=true` attaches a 64-char lowercase SHA-256 `stateHash` per **returned window** block from exact `getBlockKramdown` (not SQL text; never hashes the full document). Use those hashes as `edit_block.expectedHash`. |
+| `edit_block` | Exact block ID; `expectedContent` or `expectedHash`; reference impact; Safe Write Transaction (snapshot → confirm → recheck → execute once → readback; never retries a failed write). `validateOnly=true` runs the full preflight and returns `mode=validated` / `writeExecuted=false` without any write API (even if `confirmed=true`). Audit metadata sets `preview=true` for validateOnly and `preview=false` for a real edit (metadata only; no bodies/hashes). |
 
 Structural tools `rename_note` / `move_note` use a two-step, one-time `previewToken`. Cross-notebook moves are a separate permission and are denied by default.
 
@@ -119,11 +119,23 @@ Safe Write Transaction (`update_note`, `edit_block`): pre-write snapshot (failur
 
 These are optional local helpers. They do not replace the TypeScript plugin path for everyday SiYuan use.
 
+## Verified on SiYuan 3.8.0-alpha.2 (local)
+
+Evidence from a **real local SiYuan 3.8.0-alpha.2** instance (dedicated disposable notebook; plugin tools only):
+
+- MCP `initialize` negotiated protocol **`2025-03-26`**
+- `tools/list`: **51** tools total — **19** `plugin__siyuanmaster__*`, **0** legacy `plugin__siyuan_agent_access__*`
+- Read smoke: `get_policy`, `list_accessible_notebooks`
+- Full write smoke (writes never retried): `create_note` → visibility `read_note` → `resolve_document` → `read_note_segments(includeStateHash=true)` → `edit_block validateOnly=true` (no write) → **one** confirmed `edit_block` committed and verified → post-edit `read_note` → **one** `update_note` → final `read_note` → `delete_note` cleanup
+- Audit metadata distinguishes validateOnly (`preview=true`) from real edit (`preview=false`)
+
+This is **not** a claim of full external-project parity (Bridge / Sisyphus) or of every tool combination under every policy.
+
 ## Current limitations
 
 - **Permissions:** Effective model is notebook decision inherited by descendants. Document-level read/write/hidden overrides are **not** wired into the plugin.
 - **Write confirm retry:** For `update_note` / `edit_block`, a confirmation retry starts a **new** transaction and snapshot. There is no persistent cross-call preview token and no user-visible full diff.
-- **Gateway / E2E:** Gateway outbound proxy toward the SiYuan kernel and full end-to-end SiYuan runtime behavior are **not** production-verified in this release.
+- **Still unverified on a real instance (unless separate evidence exists):** non-empty block-reference scenarios (`referenceProtection` with real refs), very long-document `read_note_segments` performance/sorting, Dock/settings **GUI visual** behavior, and gateway outbound proxy toward the SiYuan kernel.
 - **Scope:** This is not a claim of complete SiYuan feature coverage (no attribute-view database tooling, flashcards, timeline, Docker/remote deployment, multi-block table editors, asset upload, and similar backlog items).
 
 ## Development and build
@@ -160,9 +172,10 @@ Preconditions:
 - `SIYUAN_API_TOKEN` set (never printed). Loopback MCP URL only.
 - Explicit acknowledgement: **`--confirm-destructive-smoke`** (required).
 
-Lifecycle (plugin tools only; no native API / bypass):
-`get_policy` → `list_accessible_notebooks` (preflight) → `create_note` → readiness `read_note` (bounded poll) → `update_note` → `read_note` → `delete_note`.
-After create, the smoke waits up to a **bounded window** (~5s: 20 × 250ms) for SiYuan index visibility via plugin **`read_note` only** (`confirmed=true`). Only those readiness reads may be retried; **create / update / delete are never retried**. `{ok:false}` is treated as not-yet-visible until the bound; malformed MCP/`structuredContent` is a hard failure.
+Lifecycle (plugin tools only; no native API / bypass; **writes never retried**):
+`get_policy` → `list_accessible_notebooks` (preflight) → `create_note` → readiness `read_note` (bounded poll; capture `hPath`) → `resolve_document` → `read_note_segments` (over-limit clamp + `includeStateHash=true` for marker `stateHash`) → `edit_block validateOnly=true` (full preflight, **no write**) → **one** `edit_block` (`validateOnly=false`, `confirmed=true`, same `blockId`/`markdown`/`expectedHash`) → post-edit `read_note` (edit marker) → **one** `update_note` → final `read_note` → `delete_note` cleanup.
+
+After create, the smoke waits up to a **bounded window** (~5s: 20 × 250ms) for SiYuan index visibility via plugin **`read_note` only** (`confirmed=true`). Only read polls may be retried; **create / edit_block / update / delete are never retried**. `{ok:false}` is treated as not-yet-visible until the bound; malformed MCP/`structuredContent` is a hard failure. `edit_block` uses window `stateHash` from `includeStateHash` — not SQL segment text — as `expectedHash`.
 Success leaves **no** smoke note. **Known-ID** post-create failures (validated SiYuan `documentId`) get **exactly one** plugin `delete_note` cleanup attempt; if cleanup fails, a note **may remain** and the error prints **only** that validated `documentId` (no title/body/token/session). **Unknown create outcome** (timeout, missing/malformed envelope, `{ok:false}`, or missing/invalid `documentId`) cannot run cleanup safely — the error reports **`artifactPossiblyCreated=true`** and that manual inspection is required in the selected disposable notebook (**no** `documentId` / title / body / token / session).
 
 ```bash

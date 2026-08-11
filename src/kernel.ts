@@ -16,16 +16,14 @@ import {
   type MigrationStorageIO,
 } from "./migration";
 import {
+  attachBlockStateHashes,
   blockDisplayText,
   buildOutline,
-  classifyReferenceRisk,
-  parseWriteTarget,
-  referenceAllows,
   resolveDocumentPath,
   windowBlocks,
   type BlockRow,
-  type ReferencingBlock,
 } from "./document-access";
+import { EditBlockError, performEditBlock } from "./edit-block";
 import { buildDocumentTree } from "./document-tree";
 import {
   assertSiyuanId,
@@ -1412,7 +1410,7 @@ class SiYuanMasterKernelPlugin {
       "read_note_segments",
       genericToolConfig(
         "Read Note Segments (Outline + Full Blocks)",
-        "Reads an allowed note as an outline plus a hard-capped window of full display blocks. Limits come from safety.longDocument and cannot be exceeded by the caller.",
+        "Reads an allowed note as an outline plus a hard-capped window of full display blocks. Limits come from safety.longDocument and cannot be exceeded by the caller. Optional includeStateHash attaches exact getBlockKramdown SHA-256 digests only for the returned window (never the full document).",
         {
           type: "object",
           properties: {
@@ -1429,6 +1427,11 @@ class SiYuanMasterKernelPlugin {
               type: "number",
               description:
                 "Requested block window size; clamped by policy maxBlocksPerWindow.",
+            },
+            includeStateHash: {
+              type: "boolean",
+              description:
+                "When true, attach a 64-char lowercase SHA-256 stateHash for each returned window block from getBlockKramdown (not SQL markdown). Default false — zero extra cost.",
             },
             confirmed: confirmedProperty(),
           },
@@ -1460,6 +1463,7 @@ class SiYuanMasterKernelPlugin {
               1,
               limits.maxBlocksPerWindow,
             );
+            const includeStateHash = input.includeStateHash === true;
             const rawBlocks = await this.client.listDocumentBlocks(
               context.document.id,
             );
@@ -1490,6 +1494,22 @@ class SiYuanMasterKernelPlugin {
               limits.maxOutlineBlocks,
             );
             const window = windowBlocks(blocks, offset, requestedLimit);
+            // Window first; stateHash only for returned page (bounded concurrency).
+            let pageBlocks = window.page.map((block) => ({
+              blockId: block.blockId,
+              blockType: block.blockType,
+              text: blockDisplayText(block),
+              truncated:
+                (block.markdown?.length ?? block.content.length) >=
+                limits.maxCharsPerBlock,
+            }));
+            if (includeStateHash) {
+              pageBlocks = await attachBlockStateHashes(
+                pageBlocks,
+                (blockId) => this.client.getBlockKramdown(blockId),
+                computeContentHash,
+              );
+            }
             return {
               documentId: context.document.id,
               notebookId: context.document.box,
@@ -1497,14 +1517,7 @@ class SiYuanMasterKernelPlugin {
               hPath: context.document.hpath,
               outline,
               outlineTruncated: headings.length > outline.length,
-              blocks: window.page.map((block) => ({
-                blockId: block.blockId,
-                blockType: block.blockType,
-                text: blockDisplayText(block),
-                truncated:
-                  (block.markdown?.length ?? block.content.length) >=
-                  limits.maxCharsPerBlock,
-              })),
+              blocks: pageBlocks,
               offset,
               limit: requestedLimit,
               nextOffset: window.nextOffset,
@@ -1526,7 +1539,7 @@ class SiYuanMasterKernelPlugin {
       "edit_block",
       genericToolConfig(
         "Edit Block (Exact ID + Expected State + Safe Write Transaction)",
-        "Edits one block by exact SiYuan ID. Requires expectedContent or expectedHash, reports reference impact, requires confirmation by default, snapshots before write, rechecks state, executes once, and verifies via readback. Never writes by human path. Audit never includes body text.",
+        "Edits one block by exact SiYuan ID. Requires expectedContent or expectedHash, reports reference impact, requires confirmation by default, snapshots before write, rechecks state, executes once, and verifies via readback. Set validateOnly=true to run the full preflight atomically without any write API. Never writes by human path. Audit never includes body text.",
         {
           type: "object",
           properties: {
@@ -1548,6 +1561,11 @@ class SiYuanMasterKernelPlugin {
               description:
                 "Optional SHA-256 hex of the current block content. Alternative to expectedContent.",
             },
+            validateOnly: {
+              type: "boolean",
+              description:
+                "When true, run full expected-state and reference validation then return mode=validated without calling any write API (even if confirmed=true). Default false.",
+            },
             confirmed: confirmedProperty(),
           },
           required: ["blockId", "markdown"],
@@ -1557,6 +1575,7 @@ class SiYuanMasterKernelPlugin {
       ),
       async (input) => {
         const confirmed = input.confirmed === true;
+        const validateOnly = input.validateOnly === true;
         const blockId =
           typeof input.blockId === "string" ? input.blockId : undefined;
         const markdown =
@@ -1568,166 +1587,67 @@ class SiYuanMasterKernelPlugin {
             documentId: blockId,
             confirmed,
             contentLength: markdown?.length,
+            // Metadata-only: AuditEntry.preview is boolean — mark validateOnly runs.
+            // Never log bodies, hashes, refs, or tokens.
+            preview: validateOnly,
           },
           async () => {
+            // Policy-deny priority: fail before assertDocumentAllowed or any
+            // existence/access read (getBlockKramdown, list refs, etc.).
             if (this.policy.operations.update === "deny") {
               this.ensureOperation("update", confirmed);
-            }
-            let writeTarget;
-            try {
-              writeTarget = parseWriteTarget(
-                stringInput(input.blockId, "blockId"),
-                typeof input.expectedHash === "string"
-                  ? input.expectedHash
-                  : undefined,
-              );
-            } catch (error) {
-              throw new PolicyViolation(
-                "invalid_request",
-                error instanceof Error ? error.message : String(error),
-              );
             }
             const content = stringInput(input.markdown, "markdown", {
               allowEmpty: true,
               maxLength: MAX_MARKDOWN_LENGTH,
             });
-            const context = await this.assertDocumentAllowed(
-              writeTarget.id,
-            );
-            // Block must be the exact requested ID (not only the document root).
-            if (context.requested.id !== writeTarget.id) {
-              throw new PolicyViolation(
-                "invalid_request",
-                "blockId must identify an exact existing block",
+            const targetId = stringInput(input.blockId, "blockId");
+            // Resolve access boundary only after deny is cleared.
+            const context = await this.assertDocumentAllowed(targetId);
+            try {
+              return await performEditBlock(
+                {
+                  blockId: targetId,
+                  markdown: content,
+                  expectedContent:
+                    typeof input.expectedContent === "string"
+                      ? input.expectedContent
+                      : undefined,
+                  expectedHash:
+                    typeof input.expectedHash === "string"
+                      ? input.expectedHash
+                      : undefined,
+                  confirmed,
+                  validateOnly,
+                },
+                {
+                  requestedId: context.requested.id,
+                  documentId: context.document.id,
+                  notebookId: context.document.box,
+                  updated: context.requested.updated,
+                },
+                {
+                  operations: { update: this.policy.operations.update },
+                  safety: {
+                    blockEdit: this.policy.safety.blockEdit,
+                    referenceProtection:
+                      this.policy.safety.referenceProtection,
+                  },
+                },
+                {
+                  getBlockKramdown: (id) => this.client.getBlockKramdown(id),
+                  listReferencingBlocks: async (id) =>
+                    this.client.listReferencingBlocks(id),
+                  updateBlockMarkdown: (id, md) =>
+                    this.client.updateBlockMarkdown(id, md),
+                },
               );
-            }
-            const currentKramdown = await this.client.getBlockKramdown(
-              writeTarget.id,
-            );
-            const currentHash = await computeContentHash(currentKramdown);
-            if (this.policy.safety.blockEdit.requireExpectedState) {
-              const expectedContent =
-                typeof input.expectedContent === "string"
-                  ? input.expectedContent
-                  : undefined;
-              if (!expectedContent && !writeTarget.expectedHash) {
-                throw new PolicyViolation(
-                  "invalid_request",
-                  "edit_block requires expectedContent or expectedHash when requireExpectedState is true",
-                );
+            } catch (error) {
+              if (error instanceof EditBlockError) {
+                throw new PolicyViolation(error.code, error.message);
               }
-              if (
-                expectedContent !== undefined &&
-                expectedContent !== currentKramdown
-              ) {
-                throw new PolicyViolation(
-                  "state_changed",
-                  "expectedContent does not match the current block content",
-                );
-              }
-              if (
-                writeTarget.expectedHash &&
-                writeTarget.expectedHash !== currentHash
-              ) {
-                throw new PolicyViolation(
-                  "state_changed",
-                  "expectedHash does not match the current block content hash",
-                );
-              }
+              throw error;
             }
-
-            const referencing = (await this.client.listReferencingBlocks(
-              writeTarget.id,
-            )) as ReferencingBlock[];
-            const risk = classifyReferenceRisk(
-              referencing,
-              context.document.id,
-            );
-            if (
-              !referenceAllows(
-                referencing,
-                this.policy.safety.referenceProtection,
-              )
-            ) {
-              throw new PolicyViolation(
-                "operation_denied",
-                `Block is referenced by ${referencing.length} block(s); referenceProtection=deny blocks the edit`,
-              );
-            }
-            const requireConfirmation =
-              this.policy.operations.update === "confirm" ||
-              this.policy.safety.blockEdit.defaultConfirm ||
-              (this.policy.safety.referenceProtection === "warn" &&
-                referencing.length > 0);
-            const expectedHash = await computeContentHash(content);
-            const txn = await runWriteTransaction({
-              kind: "edit_block",
-              confirmed,
-              requireConfirmation,
-              expectedReadbackHash: expectedHash,
-              io: {
-                snapshot: async () => {
-                  const kramdown = await this.client.getBlockKramdown(
-                    writeTarget.id,
-                  );
-                  return {
-                    hash: await computeContentHash(kramdown),
-                    updated: context.requested.updated,
-                  };
-                },
-                verifyCurrent: async () => {
-                  const kramdown = await this.client.getBlockKramdown(
-                    writeTarget.id,
-                  );
-                  return computeContentHash(kramdown);
-                },
-                execute: async () => {
-                  await this.client.updateBlockMarkdown(
-                    writeTarget.id,
-                    content,
-                  );
-                },
-                readback: async () => {
-                  const kramdown = await this.client.getBlockKramdown(
-                    writeTarget.id,
-                  );
-                  return computeContentHash(kramdown);
-                },
-              },
-            });
-            if (txn.state === "awaiting_confirmation") {
-              throw new PolicyViolation(
-                "confirmation_required",
-                txn.notice ??
-                  `edit_block requires confirmed=true (referenceRisk=${risk}, refs=${referencing.length})`,
-              );
-            }
-            if (txn.state !== "committed") {
-              throw new PolicyViolation(
-                txn.error === "state_changed"
-                  ? "state_changed"
-                  : "invalid_request",
-                txn.notice ??
-                  `Safe Write Transaction ended in state ${txn.state}`,
-              );
-            }
-            return {
-              blockId: writeTarget.id,
-              documentId: context.document.id,
-              notebookId: context.document.box,
-              updatedCharacters: content.length,
-              referenceRisk: risk,
-              referencingCount: referencing.length,
-              referencing: referencing.map((item) => ({
-                blockId: item.blockId,
-                documentId: item.documentId,
-                notebookId: item.notebookId,
-                contentSnippet: item.contentSnippet,
-              })),
-              txnId: txn.record.id,
-              txnState: txn.state,
-              verified: true,
-            };
           },
         );
       },

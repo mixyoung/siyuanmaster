@@ -3,11 +3,17 @@
 // Protocol: MCP 2025-03-26
 //   initialize → (Mcp-Session-Id) → notifications/initialized → tools/list + catalog
 //   → get_policy → list_accessible_notebooks → preflight
-//   → create_note → readiness read_note (bounded poll) → update_note → read_note → delete_note
+//   → create_note → visibility read_note (bounded poll; capture hPath)
+//   → resolve_document → read_note_segments (over-limit clamp + includeStateHash)
+//   → edit_block validateOnly=true (atomic server validation; never writes)
+//   → edit_block validateOnly=false confirmed=true exactly once
+//   → post-edit read_note (prove edit marker BEFORE update)
+//   → update_note exactly once → final read_note (prove update marker/body + identity)
+//   → delete_note cleanup
 //
 // Safety:
 // - Requires BOTH --notebook-id and --confirm-destructive-smoke
-// - notebookId / create documentId must match SiYuan id form /^\d{14}-[a-z0-9]{7}$/
+// - notebookId / create documentId / blockId must match SiYuan id form /^\d{14}-[a-z0-9]{7}$/
 // - Loopback hosts only; token only from SIYUAN_API_TOKEN (never printed)
 // - Plugin tools only (plugin__siyuanmaster__*); no native API / bypass / policy mutation
 // - get_policy: MCP result.structuredContent is the policy object directly
@@ -16,16 +22,27 @@
 //   structuredContent { ok: true, result: <object> } (runTool path)
 // - After create: bounded READ-ONLY visibility wait via plugin read_note only
 //   (default ~5s: 20 attempts × 250ms). {ok:false} = not-yet-visible until bound;
-//   malformed MCP/structuredContent = hard failure. Never retry create/update/delete.
-// - Never parse content.text; never log secret/raw MCP payloads / title / body / marker
+//   malformed MCP/structuredContent = hard failure. Never retry writes
+//   (create/update/edit_block/delete).
+// - Lifecycle order avoids editing a just-updated new block: create → visibility
+//   (hPath) → resolve → segments → validateOnly → actual edit once → post-edit
+//   read (edit marker) → update once → final read (update body/identity) → delete.
+// - edit_block: segments SQL text is NOT used as expectedContent. Marker blocks
+//   must carry unique truncated=false + 64-char lowercase stateHash from
+//   includeStateHash=true (getBlockKramdown-backed). validateOnly proves
+//   expectedHash/refs without write; actual write uses the same expectedHash
+//   once under --confirm-destructive-smoke. No confirmation_required probe
+//   (TOCTOU-unsafe; removed).
 // - Preflight: notebook accessible; create/update/read/delete not deny
-//   (delete default deny → fail before create unless cleanup permitted)
+//   (operations.update must not be deny so edit path can run).
+// - tagging always exact { decision: "skip", tags: [] } on create/update
 // - Known-ID post-create failure: exactly one finally cleanup via plugin delete_note
 // - Unknown create outcome (timeout / malformed envelope / ok:false / missing or invalid
 //   documentId): no cleanup; error appends artifactPossiblyCreated=true + manual
 //   inspection in the selected disposable notebook (never notebookId/title/body/token)
 // - Success logs never include token/session/raw responses/policy/notebook names or
-//   IDs/title/body/marker. Cleanup failure may show validated documentId only.
+//   IDs/title/body/marker/hPath/txnId/hash/reference snippets. Cleanup failure may show
+//   validated documentId only.
 //
 // Does not start/stop SiYuan; does not touch auth config.
 
@@ -72,6 +89,16 @@ export const DEFAULT_VISIBILITY_DELAY_MS = 250;
 /** Fixed safe message when the new document never becomes readable within the bound. */
 export const VISIBILITY_TIMEOUT_MESSAGE =
   "created document not visible to read_note within the bounded wait window";
+
+/**
+ * Over-limit block window request for read_note_segments clamp proof.
+ * Must exceed any reasonable safety.longDocument.maxBlocksPerWindow.
+ */
+export const SEGMENTS_OVER_LIMIT_REQUEST = 10_000;
+
+/** Fixed safe message when post-edit replacement marker never becomes readable. */
+export const POST_EDIT_VISIBILITY_TIMEOUT_MESSAGE =
+  "edited marker not visible to read_note within the bounded wait window";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, "..");
@@ -190,6 +217,29 @@ export function assertWriteOpsPermitted(operations, context = "preflight") {
   }
 }
 
+/** Strict 64-char lowercase hex SHA-256 (stateHash / expectedHash). */
+export const STATE_HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+/**
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+export function isStateHash(value) {
+  return typeof value === "string" && STATE_HASH_PATTERN.test(value);
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} [context]
+ * @returns {string}
+ */
+export function assertStateHash(value, context = "stateHash") {
+  if (!isStateHash(value)) {
+    throw new Error(`${context}: must be a 64-character lowercase hex SHA-256 digest`);
+  }
+  return value;
+}
+
 /**
  * Prove target notebookId is listed as accessible (id match only; never log names).
  */
@@ -212,13 +262,14 @@ export function assertNotebookAccessible(listResult, notebookId, context = "pref
 }
 
 /**
- * Generate unique title + body marker (caller must not log them on success).
+ * Generate unique title + body + edit markers (caller must not log them on success).
  */
 export function generateSmokeIdentity(now = Date.now(), entropy = randomBytes) {
   const suffix = entropy(8).toString("hex");
   return {
     title: `mcp-write-smoke-${now}-${suffix}`,
     bodyMarker: `mcp-write-smoke-marker-${now}-${suffix}`,
+    editMarker: `mcp-write-smoke-edit-marker-${now}-${suffix}`,
   };
 }
 
@@ -232,6 +283,10 @@ export function buildLifecycleArgs({
   title,
   bodyMarker,
   documentId,
+  hPath,
+  blockId,
+  expectedHash,
+  editMarker,
 }) {
   const createMarkdown = `# mcp-write-smoke\n\n${bodyMarker}\n`;
   const updateMarkdown = `# mcp-write-smoke\n\n${bodyMarker}\n\nupdated\n`;
@@ -252,6 +307,34 @@ export function buildLifecycleArgs({
     },
     read: {
       documentId,
+      confirmed: true,
+    },
+    resolve: {
+      notebookId,
+      hPath,
+      confirmed: true,
+    },
+    segments: {
+      documentId,
+      offset: 0,
+      limit: SEGMENTS_OVER_LIMIT_REQUEST,
+      includeStateHash: true,
+      confirmed: true,
+    },
+    /** Atomic server validation — never writes regardless of confirmed. */
+    editValidate: {
+      blockId,
+      markdown: editMarker,
+      expectedHash,
+      validateOnly: true,
+      confirmed: false,
+    },
+    /** Single destructive write under --confirm-destructive-smoke. */
+    edit: {
+      blockId,
+      markdown: editMarker,
+      expectedHash,
+      validateOnly: false,
       confirmed: true,
     },
     delete: {
@@ -408,6 +491,277 @@ export function assertDeleted(deleteResult, context = "delete_note") {
   }
 }
 
+/**
+ * Require a non-empty hPath string from a verification read (never logged).
+ * @returns {string}
+ */
+export function assertReadHasHPath(readResult, context = "read_note") {
+  if (!readResult || typeof readResult !== "object") {
+    throw new Error(`${context}: missing result object`);
+  }
+  if (typeof readResult.hPath !== "string" || readResult.hPath.trim().length === 0) {
+    throw new Error(`${context}: result.hPath missing or empty`);
+  }
+  return readResult.hPath.trim();
+}
+
+/**
+ * Verify resolve_document envelope result fields (lookup-only path resolution).
+ */
+export function assertResolveDocumentMatch(
+  resolveResult,
+  { documentId, notebookId, title, hPath },
+  context = "resolve_document",
+) {
+  if (!resolveResult || typeof resolveResult !== "object") {
+    throw new Error(`${context}: missing result object`);
+  }
+  if (resolveResult.documentId !== documentId) {
+    throw new Error(`${context}: result.documentId mismatch`);
+  }
+  if (resolveResult.notebookId !== notebookId) {
+    throw new Error(`${context}: result.notebookId mismatch`);
+  }
+  if (resolveResult.title !== title) {
+    throw new Error(`${context}: result.title mismatch`);
+  }
+  if (resolveResult.hPath !== hPath) {
+    throw new Error(`${context}: result.hPath mismatch`);
+  }
+  if (resolveResult.lookupOnly !== true) {
+    throw new Error(`${context}: result.lookupOnly must be true`);
+  }
+  if (resolveResult.writeByPath !== false) {
+    throw new Error(`${context}: result.writeByPath must be false`);
+  }
+}
+
+/**
+ * Verify read_note_segments envelope result: identity fields, hard clamp, block ids.
+ * Does not select the marker target (see findUniqueExactMarkerBlock).
+ * @returns {object} segments result when valid
+ */
+export function assertReadNoteSegmentsMatch(
+  segmentsResult,
+  { documentId, notebookId, title, hPath, requestedLimit },
+  context = "read_note_segments",
+) {
+  if (!segmentsResult || typeof segmentsResult !== "object") {
+    throw new Error(`${context}: missing result object`);
+  }
+  if (segmentsResult.documentId !== documentId) {
+    throw new Error(`${context}: result.documentId mismatch`);
+  }
+  if (segmentsResult.notebookId !== notebookId) {
+    throw new Error(`${context}: result.notebookId mismatch`);
+  }
+  if (segmentsResult.title !== title) {
+    throw new Error(`${context}: result.title mismatch`);
+  }
+  if (segmentsResult.hPath !== hPath) {
+    throw new Error(`${context}: result.hPath mismatch`);
+  }
+  const limits = segmentsResult.limits;
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)) {
+    throw new Error(`${context}: result.limits missing or malformed`);
+  }
+  if (
+    typeof limits.maxBlocksPerWindow !== "number" ||
+    !Number.isFinite(limits.maxBlocksPerWindow) ||
+    limits.maxBlocksPerWindow < 1
+  ) {
+    throw new Error(`${context}: limits.maxBlocksPerWindow missing or invalid`);
+  }
+  if (
+    typeof segmentsResult.limit !== "number" ||
+    !Number.isFinite(segmentsResult.limit)
+  ) {
+    throw new Error(`${context}: result.limit missing or invalid`);
+  }
+  if (segmentsResult.limit > limits.maxBlocksPerWindow) {
+    throw new Error(
+      `${context}: result.limit exceeds limits.maxBlocksPerWindow`,
+    );
+  }
+  if (
+    typeof requestedLimit !== "number" ||
+    !Number.isFinite(requestedLimit) ||
+    requestedLimit <= limits.maxBlocksPerWindow
+  ) {
+    throw new Error(
+      `${context}: requested limit must exceed maxBlocksPerWindow to prove clamp`,
+    );
+  }
+  if (segmentsResult.limit !== limits.maxBlocksPerWindow) {
+    throw new Error(
+      `${context}: over-limit request was not clamped to maxBlocksPerWindow`,
+    );
+  }
+  if (!Array.isArray(segmentsResult.blocks)) {
+    throw new Error(`${context}: result.blocks must be an array`);
+  }
+  for (const block of segmentsResult.blocks) {
+    if (!block || typeof block !== "object" || Array.isArray(block)) {
+      throw new Error(`${context}: block entry malformed`);
+    }
+    if (!isSiyuanId(block.blockId)) {
+      throw new Error(`${context}: block.blockId invalid format`);
+    }
+  }
+  return segmentsResult;
+}
+
+/**
+ * Find the unique untruncated block whose trimmed text exactly equals marker
+ * and whose stateHash is a strict 64-char lowercase hex digest.
+ * Segments text is never used as expectedContent (SQL ≠ kramdown); stateHash
+ * from includeStateHash=true is the only accepted expected state token.
+ * @returns {{ blockId: string, text: string, truncated: false, stateHash: string }}
+ */
+export function findUniqueExactMarkerBlock(
+  blocks,
+  marker,
+  context = "read_note_segments",
+) {
+  if (!Array.isArray(blocks)) {
+    throw new Error(`${context}: blocks must be an array`);
+  }
+  if (typeof marker !== "string" || marker.length === 0) {
+    throw new Error(`${context}: marker is required`);
+  }
+  /** @type {Array<{ blockId: string, text: string, truncated: false, stateHash: string }>} */
+  const hits = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object" || Array.isArray(block)) {
+      throw new Error(`${context}: block entry malformed`);
+    }
+    if (!isSiyuanId(block.blockId)) {
+      throw new Error(`${context}: block.blockId invalid format`);
+    }
+    if (typeof block.text !== "string") {
+      continue;
+    }
+    if (block.truncated === true) {
+      continue;
+    }
+    if (block.truncated !== false) {
+      // Only accept explicit truncated=false for edit targets
+      continue;
+    }
+    if (block.text.trim() !== marker) {
+      continue;
+    }
+    if (!isStateHash(block.stateHash)) {
+      throw new Error(
+        `${context}: marker block missing or invalid stateHash (require includeStateHash=true)`,
+      );
+    }
+    hits.push({
+      blockId: block.blockId,
+      text: block.text,
+      truncated: false,
+      stateHash: block.stateHash,
+    });
+  }
+  if (hits.length === 0) {
+    throw new Error(`${context}: unique exact marker block not found`);
+  }
+  if (hits.length > 1) {
+    throw new Error(`${context}: marker block is not unique`);
+  }
+  return hits[0];
+}
+
+/**
+ * Strict validateOnly=true edit_block success: mode=validated, no write,
+ * exact ids, empty refs for the dedicated smoke block. Never logs values.
+ */
+export function assertEditBlockValidated(
+  editResult,
+  { blockId, documentId, notebookId },
+  context = "edit_block validateOnly",
+) {
+  if (!editResult || typeof editResult !== "object") {
+    throw new Error(`${context}: missing result object`);
+  }
+  if (editResult.mode !== "validated") {
+    throw new Error(`${context}: result.mode must be validated`);
+  }
+  if (editResult.validated !== true) {
+    throw new Error(`${context}: validated is not true`);
+  }
+  if (editResult.writeExecuted !== false) {
+    throw new Error(`${context}: writeExecuted must be false`);
+  }
+  if (editResult.blockId !== blockId) {
+    throw new Error(`${context}: result.blockId mismatch`);
+  }
+  if (editResult.documentId !== documentId) {
+    throw new Error(`${context}: result.documentId mismatch`);
+  }
+  if (editResult.notebookId !== notebookId) {
+    throw new Error(`${context}: result.notebookId mismatch`);
+  }
+  if (editResult.referenceRisk !== "none") {
+    throw new Error(`${context}: referenceRisk is not none`);
+  }
+  if (editResult.referencingCount !== 0) {
+    throw new Error(`${context}: referencingCount must be 0`);
+  }
+  if (!Array.isArray(editResult.referencing)) {
+    throw new Error(`${context}: result.referencing must be an array`);
+  }
+  if (editResult.referencing.length !== 0) {
+    throw new Error(`${context}: referencing must be empty`);
+  }
+  // Fail closed if a write-shaped payload sneaks through
+  if (editResult.txnState !== undefined || editResult.verified !== undefined) {
+    throw new Error(`${context}: unexpected write txn fields on validateOnly result`);
+  }
+}
+
+/**
+ * Verify confirmed write edit_block result: exact ids, committed txn, verified,
+ * and empty references for the dedicated test block.
+ * Never logs ids, txnId, or reference snippets.
+ */
+export function assertEditBlockCommitted(
+  editResult,
+  { blockId, documentId, notebookId },
+  context = "edit_block",
+) {
+  if (!editResult || typeof editResult !== "object") {
+    throw new Error(`${context}: missing result object`);
+  }
+  if (editResult.blockId !== blockId) {
+    throw new Error(`${context}: result.blockId mismatch`);
+  }
+  if (editResult.documentId !== documentId) {
+    throw new Error(`${context}: result.documentId mismatch`);
+  }
+  if (editResult.notebookId !== notebookId) {
+    throw new Error(`${context}: result.notebookId mismatch`);
+  }
+  if (editResult.txnState !== "committed") {
+    throw new Error(`${context}: txnState is not committed`);
+  }
+  if (editResult.verified !== true) {
+    throw new Error(`${context}: verified is not true`);
+  }
+  if (editResult.referenceRisk !== "none") {
+    throw new Error(`${context}: referenceRisk is not none`);
+  }
+  if (editResult.referencingCount !== 0) {
+    throw new Error(`${context}: referencingCount must be 0`);
+  }
+  if (!Array.isArray(editResult.referencing)) {
+    throw new Error(`${context}: result.referencing must be an array`);
+  }
+  if (editResult.referencing.length !== 0) {
+    throw new Error(`${context}: referencing must be empty`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -485,17 +839,24 @@ function printHelp(log = console.log) {
 DESTRUCTIVE write smoke (MCP ${PROTOCOL_VERSION}). Explicit opt-in only.
   initialize → session → tools/list + catalog
   → get_policy + list_accessible_notebooks (preflight)
-  → create_note → readiness read_note (bounded poll) → update_note → read_note → delete_note
-  (plugin__siyuanmaster__* only; no edit/rename/move; no native bypass)
+  → create_note → visibility read_note (bounded poll; capture hPath)
+  → resolve_document → read_note_segments (over-limit clamp + includeStateHash)
+  → edit_block validateOnly=true (atomic server validation; never writes)
+  → edit_block validateOnly=false confirmed=true exactly once
+  → post-edit read_note (prove edit marker before update)
+  → update_note exactly once → final read_note (prove update marker/body + identity)
+  → delete_note
+  (plugin__siyuanmaster__* only; no rename/move; no native bypass; no policy mutation)
 
 After create, waits up to ~${DEFAULT_VISIBILITY_MAX_ATTEMPTS * DEFAULT_VISIBILITY_DELAY_MS}ms
 (${DEFAULT_VISIBILITY_MAX_ATTEMPTS} × ${DEFAULT_VISIBILITY_DELAY_MS}ms) for SiYuan index
-visibility via plugin read_note only. Only read polls may retry; create/update/delete
-never retry.
+visibility via plugin read_note only. Post-edit uses the same bounded read_note poll
+for the replacement marker before update_note. Only read polls may retry;
+create/update/edit_block/delete never retry. edit_block write is never retried.
 
 Requirements:
   --notebook-id ID              disposable allowed notebook (exact id)
-  --confirm-destructive-smoke   required confirmation flag
+  --confirm-destructive-smoke   required confirmation flag (this run's explicit write gate)
   policy: create/update/read/delete not deny (delete default deny — set allow/confirm)
   SIYUAN_API_TOKEN              required; never printed
 
@@ -596,6 +957,8 @@ export async function waitForCreatedDocumentVisible(options) {
     maxAttempts = DEFAULT_VISIBILITY_MAX_ATTEMPTS,
     delayMs = DEFAULT_VISIBILITY_DELAY_MS,
     sleep = defaultSleep,
+    context = "visibility read_note",
+    timeoutMessage = VISIBILITY_TIMEOUT_MESSAGE,
   } = options;
 
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
@@ -612,7 +975,6 @@ export async function waitForCreatedDocumentVisible(options) {
     documentId,
     confirmed: true,
   };
-  const context = "visibility read_note";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const callResult = await callMcpToolResult({
@@ -634,7 +996,7 @@ export async function waitForCreatedDocumentVisible(options) {
       await sleep(delayMs);
     }
   }
-  throw new Error(VISIBILITY_TIMEOUT_MESSAGE);
+  throw new Error(timeoutMessage);
 }
 
 /**
@@ -812,7 +1174,8 @@ export async function runMcpWriteSmoke(options) {
   });
   log("preflight list_accessible_notebooks ok");
 
-  // 5) Preflight — refuse create unless notebook accessible and cleanup permitted
+  // 5) Preflight — refuse create unless notebook accessible and ops permit
+  //    create/update/read/delete (update must not deny so edit_block can run).
   // Enveloped get_policy cannot be misread as policy: operations is missing.
   assertWriteOpsPermitted(policy.operations, "preflight");
   assertNotebookAccessible(notebooksResult, notebookId, "preflight");
@@ -821,12 +1184,23 @@ export async function runMcpWriteSmoke(options) {
   // 6) Lifecycle identity (never logged on success)
   const identityFactory =
     options.identityFactory ?? (() => generateSmokeIdentity());
-  const { title, bodyMarker } = identityFactory();
+  const identity = identityFactory();
+  const title = identity?.title;
+  const bodyMarker = identity?.bodyMarker;
+  const editMarker =
+    typeof identity?.editMarker === "string" && identity.editMarker.length > 0
+      ? identity.editMarker
+      : typeof bodyMarker === "string" && bodyMarker.length > 0
+        ? `${bodyMarker}-edit`
+        : "";
   if (typeof title !== "string" || title.length === 0) {
     throw new Error("identityFactory must return a non-empty title");
   }
   if (typeof bodyMarker !== "string" || bodyMarker.length === 0) {
     throw new Error("identityFactory must return a non-empty bodyMarker");
+  }
+  if (typeof editMarker !== "string" || editMarker.length === 0) {
+    throw new Error("identityFactory must yield a non-empty editMarker");
   }
 
   let documentId = null;
@@ -904,8 +1278,8 @@ export async function runMcpWriteSmoke(options) {
 
     // Bounded READ-ONLY visibility wait: plugin read_note only. {ok:false}
     // polls until bound; malformed envelope is a hard failure. Never retries
-    // create/update/delete. Sleep/maxAttempts injectable for unit tests.
-    await waitForCreatedDocumentVisible({
+    // create/update/edit_block/delete. Capture hPath here (before any write).
+    const visibilityRead = await waitForCreatedDocumentVisible({
       callOpts,
       toolName: tool("read_note"),
       documentId,
@@ -916,9 +1290,146 @@ export async function runMcpWriteSmoke(options) {
       delayMs: visibilityDelayMs,
       sleep,
     });
+    const verifiedHPath = assertReadHasHPath(
+      visibilityRead,
+      "visibility read_note",
+    );
     log("visibility read_note ok");
 
-    // update_note (exactly once; tagging skip so ask-mode cannot block)
+    // resolve_document — lookup-only using visibility hPath (never write by path)
+    const resolveArgs = buildLifecycleArgs({
+      notebookId,
+      title,
+      bodyMarker,
+      documentId,
+      hPath: verifiedHPath,
+    }).resolve;
+    const resolveResult = await callPluginTool({
+      ...callOpts,
+      toolName: tool("resolve_document"),
+      arguments: resolveArgs,
+    });
+    assertResolveDocumentMatch(
+      resolveResult,
+      {
+        documentId,
+        notebookId,
+        title,
+        hPath: verifiedHPath,
+      },
+      "resolve_document",
+    );
+    log("resolve_document ok");
+
+    // read_note_segments — over-limit + includeStateHash on the created body
+    // (before update) so we do not edit a just-updated new block.
+    const segmentsArgs = buildLifecycleArgs({
+      notebookId,
+      title,
+      bodyMarker,
+      documentId,
+    }).segments;
+    const segmentsResult = await callPluginTool({
+      ...callOpts,
+      toolName: tool("read_note_segments"),
+      arguments: segmentsArgs,
+    });
+    assertReadNoteSegmentsMatch(
+      segmentsResult,
+      {
+        documentId,
+        notebookId,
+        title,
+        hPath: verifiedHPath,
+        requestedLimit: SEGMENTS_OVER_LIMIT_REQUEST,
+      },
+      "read_note_segments",
+    );
+    const targetBlock = findUniqueExactMarkerBlock(
+      segmentsResult.blocks,
+      bodyMarker,
+      "read_note_segments",
+    );
+    const expectedHash = assertStateHash(
+      targetBlock.stateHash,
+      "read_note_segments target.stateHash",
+    );
+    log("read_note_segments ok");
+
+    // edit_block validateOnly=true: full server preflight, never writes.
+    // Fail closed before any real write if validation shape/IDs/refs wrong.
+    const lifecycleEditArgs = buildLifecycleArgs({
+      notebookId,
+      title,
+      bodyMarker,
+      documentId,
+      blockId: targetBlock.blockId,
+      expectedHash,
+      editMarker,
+    });
+    const editValidateArgs = lifecycleEditArgs.editValidate;
+    const editValidateResult = await callPluginTool({
+      ...callOpts,
+      toolName: tool("edit_block"),
+      arguments: editValidateArgs,
+    });
+    assertEditBlockValidated(
+      editValidateResult,
+      {
+        blockId: targetBlock.blockId,
+        documentId,
+        notebookId,
+      },
+      "edit_block validateOnly",
+    );
+    log("edit_block validateOnly ok");
+
+    // Single destructive edit under --confirm-destructive-smoke.
+    // Same blockId/markdown/expectedHash as validateOnly; never retry.
+    const editArgs = lifecycleEditArgs.edit;
+    if (editArgs.expectedHash !== editValidateArgs.expectedHash) {
+      throw new Error("edit_block: expectedHash must match validateOnly call");
+    }
+    if (editArgs.blockId !== editValidateArgs.blockId) {
+      throw new Error("edit_block: blockId must match validateOnly call");
+    }
+    if (editArgs.markdown !== editValidateArgs.markdown) {
+      throw new Error("edit_block: markdown must match validateOnly call");
+    }
+    const editResult = await callPluginTool({
+      ...callOpts,
+      toolName: tool("edit_block"),
+      arguments: editArgs,
+    });
+    assertEditBlockCommitted(
+      editResult,
+      {
+        blockId: targetBlock.blockId,
+        documentId,
+        notebookId,
+      },
+      "edit_block",
+    );
+    log("edit_block ok");
+
+    // Post-edit: bounded READ-ONLY poll for replacement marker BEFORE update.
+    // Proves the edit landed; must not call update_note until this succeeds.
+    await waitForCreatedDocumentVisible({
+      callOpts,
+      toolName: tool("read_note"),
+      documentId,
+      notebookId,
+      title,
+      bodyMarker: editMarker,
+      maxAttempts: visibilityMaxAttempts,
+      delayMs: visibilityDelayMs,
+      sleep,
+      context: "post-edit read_note",
+      timeoutMessage: POST_EDIT_VISIBILITY_TIMEOUT_MESSAGE,
+    });
+    log("post-edit read_note ok");
+
+    // update_note exactly once after edit proof (tagging skip so ask-mode cannot block)
     const updateArgs = buildLifecycleArgs({
       notebookId,
       title,
@@ -933,22 +1444,28 @@ export async function runMcpWriteSmoke(options) {
     assertUpdateCommitted(updateResult, "update_note");
     log("update_note ok");
 
-    // verification read_note (after update; not part of visibility poll)
+    // Final read: prove update marker/body and identity (not part of post-edit poll)
     const readArgs = buildLifecycleArgs({
       notebookId,
       title,
       bodyMarker,
       documentId,
     }).read;
-    const readResult = await callPluginTool({
+    const finalReadResult = await callPluginTool({
       ...callOpts,
       toolName: tool("read_note"),
       arguments: readArgs,
     });
-    assertReadContainsMarker(readResult, bodyMarker, "read_note");
-    log("read_note ok");
+    assertReadVisibleMatch(
+      finalReadResult,
+      { documentId, notebookId, title, bodyMarker },
+      "final read_note",
+    );
+    // update body also carries the fixed "updated" line from buildLifecycleArgs
+    assertReadContainsMarker(finalReadResult, "updated", "final read_note");
+    log("final read_note ok");
 
-    // delete_note (lifecycle success path)
+    // delete_note (lifecycle success path) — exactly once
     const deleteArgs = buildLifecycleArgs({
       notebookId,
       title,
@@ -998,8 +1515,13 @@ export async function runMcpWriteSmoke(options) {
     },
     lifecycle: {
       create: true,
+      resolve: true,
+      segments: true,
+      editValidation: true,
+      edit: true,
+      postEditRead: true,
       update: true,
-      read: true,
+      finalRead: true,
       delete: true,
     },
     cleanupAttempted,
