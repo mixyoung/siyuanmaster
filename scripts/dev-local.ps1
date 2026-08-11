@@ -539,7 +539,7 @@ try {
 
     $stagingName = ".siyuanmaster-staging-$runGuid"
     $stagingPath = Join-Path $pluginsDir $stagingName
-    $failedPath = Join-Path $pluginsDir ".siyuanmaster-failed-$runGuid"
+    $failedPath = Join-Path $backupBase ".quarantine-$runGuid"
 
     if ($WhatIf) {
         Write-Stage "whatif" "plan only — no build, API, TCP, mkdir, move, or env mutation"
@@ -778,6 +778,16 @@ catch {
                     $recoverErrors.Add("failed-path already exists: $failedPath")
                     Write-Stage "recover" "cannot move failed target; path retained target=$targetPath failedPath=$failedPath"
                 } else {
+                    # TOCTOU revalidation: backupBase (failedPath parent) could have been swapped to a junction/symlink
+                    # between initial validation and recovery. Re-check to prevent quarantining outside the workspace.
+                    $failedParent = [System.IO.Path]::GetDirectoryName($failedPath)
+                    if ($failedParent) {
+                        Assert-ExistingPathNotReparse -Path $failedParent -Label "failedParent (backupBase)"
+                        Assert-ExistingParentsNotReparse -Path $failedParent -Label "failedParent"
+                    }
+                    if ($failedParent -and -not (Test-Path -LiteralPath $failedParent -PathType Container)) {
+                        $null = New-Item -ItemType Directory -Path $failedParent -Force
+                    }
                     Move-Item -LiteralPath $targetPath -Destination $failedPath
                     Write-Stage "recover" "moved failed target -> $failedPath"
                 }

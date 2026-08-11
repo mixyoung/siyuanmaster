@@ -305,7 +305,7 @@ mod tests {
         let catalog = Catalog::load().unwrap();
         assert_eq!(catalog.product.id, "siyuanmaster");
         assert_eq!(catalog.product.technical_id, "siyuanmaster");
-        assert_eq!(catalog.product.version, "0.5.1");
+        assert_eq!(catalog.product.version, "0.5.2");
         assert_eq!(catalog.product.display_name.zh_cn, "思源大师");
         assert_eq!(catalog.product.display_name.default, "SiYuanMaster");
         assert_eq!(catalog.namespaces.plugin, "plugin__siyuanmaster__");

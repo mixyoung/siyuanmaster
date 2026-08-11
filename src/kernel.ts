@@ -693,7 +693,7 @@ class SiYuanMasterKernelPlugin {
           brand: "siyuanmaster",
           displayName: { default: "SiYuanMaster", "zh-CN": "思源大师" },
           technicalId: "siyuanmaster",
-          version: "0.5.1",
+          version: "0.5.2",
           namespace: "plugin__siyuanmaster__",
         },
         access: this.policy.access,

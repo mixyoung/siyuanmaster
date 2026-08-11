@@ -28,7 +28,7 @@ const EXPECTED_PLUGIN_TOOL_COUNT = 19;
 const LEGACY_NAMESPACE = "plugin__siyuan_agent_access__";
 const CLIENT_INFO = {
   name: "siyuanmaster-mcp-smoke",
-  version: "0.5.1",
+  version: "0.5.2",
 };
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
