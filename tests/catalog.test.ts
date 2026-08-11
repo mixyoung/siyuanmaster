@@ -51,10 +51,10 @@ describe("capability catalog freshness and identity", () => {
     expect(committed).toBe(rendered);
   });
 
-  it("declares brand and technical id as siyuanmaster at 0.5.0", () => {
+  it("declares brand and technical id as siyuanmaster at 0.5.1", () => {
     expect(PRODUCT_ID).toBe("siyuanmaster");
     expect(TECHNICAL_ID).toBe("siyuanmaster");
-    expect(PRODUCT_VERSION).toBe("0.5.0");
+    expect(PRODUCT_VERSION).toBe("0.5.1");
     expect(PLUGIN_NAMESPACE).toBe("plugin__siyuanmaster__");
     expect(TXN_NAME).toBe("SafeWriteTxn");
   });

@@ -6,7 +6,7 @@
 export const CATALOG_SCHEMA_VERSION = 1;
 export const PRODUCT_ID = "siyuanmaster";
 export const TECHNICAL_ID = "siyuanmaster";
-export const PRODUCT_VERSION = "0.5.0";
+export const PRODUCT_VERSION = "0.5.1";
 export const PRODUCT_DISPLAY_NAME_DEFAULT = "SiYuanMaster";
 export const PRODUCT_DISPLAY_NAME_ZH_CN = "思源大师";
 export const MIN_APP_VERSION = "3.7.0";
