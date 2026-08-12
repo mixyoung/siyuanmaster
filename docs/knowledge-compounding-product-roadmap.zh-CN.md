@@ -1,13 +1,13 @@
 # SiYuanMaster 知识复利产品路线与能力差距基线
 
-> 状态：已记录的产品方向，尚未全部实现
+> 状态：持续实现中；M1 确定性注册表、模板与单来源 Ingest 预演已进入 0.6.0 源码，尚未实机安装验收
 > 基线日期：2026-08-12
-> 当前产品版本：SiYuanMaster 0.5.2
+> 当前开发版本：SiYuanMaster 0.6.0；已实机验证基线仍为 0.5.2
 > 适用范围：思源笔记 + 外部 LLM Agent + SiYuanMaster 受控工具
 
 ## 1. 结论
 
-思源笔记能够承载 Karpathy LLM Wiki 的核心模式，但 SiYuanMaster 0.5.2 还没有达到成熟 Obsidian/VS Code 实现的“一键知识复利产品体验”。
+思源笔记能够承载 Karpathy LLM Wiki 的核心模式。SiYuanMaster 0.6.0 源码已经补上 Source Manifest、Authority Registry、确定性状态统计、低上下文候选查找、版本化模板目录、预览渲染和结构校验，以及只读单来源 Ingest 状态机，但仍没有达到成熟 Obsidian/VS Code 实现的“一键知识复利产品体验”。
 
 现在已经成立的是**安全受控的 Agent 读写底座与可执行 Skill 工作流**；仍需建设的是**确定性知识编译引擎和产品交互层**。正确路线不是把分类语义全部写死进插件，也不是让 LLM 在后台随意改库，而是：
 
@@ -42,30 +42,34 @@ LLM：在上述约束内完成语义提取、综合、比较、矛盾判断和�
 - 标签策略和无正文审计；
 - Skill 中已经固定 Raw → 已有 Wiki 发现 → 更新/创建 → 回读验证流程；
 - Skill 中已经固定 topic、concept、entity、comparison、insight、source_summary 六类模板。
+- 0.6.0 源码已经实现插件私有的 Source Manifest 与 Authority Registry，不存笔记正文；
+- `register_knowledge_source`、`register_wiki_authority`、`knowledge_status`、`find_wiki_candidates` 已有能力目录、类型检查和自动化测试；真实思源安装/重载后的工具发现与写入烟测仍待独立验收。
+- `list_wiki_templates`、`render_wiki_template`、`validate_wiki_template` 已实现六类中英模板、版本化目录、只读草稿渲染和结构/元数据校验；它们不创建或修改思源笔记。
+- `plan_source_ingest` 已把重复来源、失败复核、已摄取、更新既有页、候选选择、搜索回退、创建门槛、新建页和保留 Raw 表达为只读状态与有序操作计划；同时返回受影响既有 Wiki、是否拟建新页、是否需登记 Raw、计划写操作数等结构化影响摘要。它不读取正文、不执行写入，也不替分类 Skill 做语义决定。
 
-必须诚实区分：模板和知识复利流程目前主要存在于 Skill/Schema 层，尚不是插件内的一键生成器、任务队列或健康面板。
+必须诚实区分：模板现在已有插件确定性基础，但语义填充和真实写入仍由 Agent 按 Skill 与独立授权完成；它还不是单来源一键 Ingest、任务队列或健康面板。
 
 ## 3. SiYuan + LLM 相对成熟 Obsidian/VS Code + LLM 的差距
 
-| 能力 | 成熟实现的体验 | SiYuanMaster 0.5.2 现状 | 差距性质 | 目标 |
+| 能力 | 成熟实现的体验 | SiYuanMaster 0.6.0 开发现状 | 差距性质 | 目标 |
 |---|---|---|---|---|
 | 安装后初始化 | 一条命令或一个按钮创建 Raw/Wiki/Schema、索引和日志 | 使用既有思源分类与 Skill，不创建固定三目录 | 有意不同 | 提供“启用知识复利”的向导，只登记逻辑层和规则，不强迫全库改结构 |
 | Raw 自动发现 | 文件监听、`scanRaw`、未摄取提示 | 无 Raw 清单和 watcher | 产品缺口 | 只检测并生成候选，默认不自动语义写入 |
-| 来源去重 | 文件哈希、路径和摄取状态 | 主要依赖 Agent 搜索与人工来源记录 | 数据基础缺口 | 建立 source ID、SHA-256、URL、状态、操作 ID 清单 |
-| 已有 Wiki 发现 | 页面索引、别名、分层重复检测 | `search_notes` + 有界树 + 分段读取 | 可用但不够确定 | 建立 authority/topic registry 和紧凑候选工具 |
-| Wiki 模板 | 插件或 Skill 确定性生成实体、概念、摘要等页面 | 六类模板已进入 Skill，无插件 renderer/validator | 产品缺口 | 模板注册、版本、预览渲染、结构校验 |
-| 单条摄取 | 一键选择来源后自动生成和更新页面 | Agent 按 Skill 调用多个基础工具 | 交互缺口 | 一个入口形成来源登记、候选页、写入计划和回读报告 |
+| 来源去重 | 文件哈希、路径和摄取状态 | Source Manifest 已实现 source ID、文档 ID、SHA-256、URL、状态和 operation ID 去重；未含附件自动哈希/Raw 扫描 | 部分完成 | 增加来源 adapter、自动哈希和扫描候选 |
+| 已有 Wiki 发现 | 页面索引、别名、分层重复检测 | Authority Registry + `find_wiki_candidates` 已实现；空结果回退 `search_notes` + 有界树 | 确定性基础已完成 | 补证据索引与治理预览 |
+| Wiki 模板 | 插件或 Skill 确定性生成实体、概念、摘要等页面 | 六类中英模板目录、版本、preview renderer 和结构 validator 已实现；无自动语义填充/写入 | 确定性基础已完成 | 接入单来源 Ingest plan 和写前影响预览 |
+| 单条摄取 | 一键选择来源后自动生成和更新页面 | `plan_source_ingest` 已生成来源登记、候选/回退、更新/新建、回读和登记顺序；语义填充与执行仍由 Agent 逐项完成 | 预演基础完成 | 增加可恢复执行会话、逐项状态复核和最终回读报告 |
 | 批量摄取 | 文件夹、多选、实时队列、跳过与取消 | 无知识摄取队列 | 产品缺口 | 先做可恢复任务与逐项提交，再开放批量 |
 | 实体/概念页 | 自动抽取、去重、合并 | LLM 可按 Skill 提案，无阈值和 registry | 确定性缺口 | 以复用价值、证据覆盖和独立维护门槛控制生成，避免页面爆炸 |
 | 主题索引 | 自动更新实体、概念、来源、反向链接视图 | 依赖思源文档树、反链和人工页面 | 统计缺口 | 由 registry 和证据索引生成只读视图，不维护重复数字 |
-| 覆盖率与状态 | 来源数、页面数、覆盖率、上次摄取/体检时间 | 无专用 status | 产品缺口 | 建立确定性 `knowledge_status`，不得让 LLM 猜统计值 |
+| 覆盖率与状态 | 来源数、页面数、覆盖率、上次摄取/体检时间 | `knowledge_status` 已按访问范围计算来源状态、权威页类型、链接覆盖率与最近更新时间 | 基础完成 | M2 增加主张覆盖率、过时、争议和健康面板 |
 | 来源—主张—页面 | 来源与生成页面可双向追踪 | 主要依赖正文链接和人工来源段 | 数据模型缺口 | 稳定 source/claim/block/page ID 与 evidence state 双向索引 |
 | 矛盾管理 | 检测、标记、保护人工复核页、状态迁移 | Skill 要求保留矛盾，但无状态机 | 产品缺口 | `detected → triaged → supported_both/resolved/superseded` |
 | Lint | 重复、断链、空页、孤立页、矛盾和一键修复 | Skill 定义只读 Lint，无专用工具和面板 | 产品缺口 | 先做确定性只读检查，语义问题只提案；修复另行授权 |
 | 级联更新 | 摄取时扫描受影响页面并更新索引/交叉链接 | Agent 可逐页处理，无统一影响图 | 安全缺口 | 先展示受影响页面、顺序、补丁和预期状态 |
 | 批量事务 | 多文档写入、失败恢复和操作历史 | `update_note`/`edit_block` 是单目标安全事务 | 安全缺口 | 幂等操作 ID、逐文档状态、检查点、补偿回滚、部分失败报告 |
 | 后台任务 | 进度、取消、恢复、失败重试 | 无 Ingest/Lint job | 产品缺口 | 持久队列、checkpoint、cancel/resume；恢复前重新检查状态 |
-| 查询 | 原生聊天面板、带 Wiki 链接回答 | 外部 Agent 调搜索/读工具 | 交互缺口 | 插件提供紧凑检索上下文，回答仍由外部 LLM 生成 |
+| 查询 | 原生聊天面板、带 Wiki 链接回答 | `find_wiki_candidates` 提供紧凑候选；正文读取与回答仍由外部 Agent 完成 | 交互缺口 | 增加查询入口、证据索引与一键 Promote preview |
 | 查询回写 | `/save` 或一键保存高价值答案 | Agent 按 Promote 门禁写回 | 交互缺口 | 生成目标、引用、补丁和影响预览，确认后写入 |
 | 检索排序 | 加权全文、图检索或混合检索 | SQL `LIKE`，按更新时间返回后按文档去重 | 规模缺口 | 先加权词法，再评估图/向量混合；权限过滤先于内容返回 |
 | PDF/网页来源 | 原生或外接 PDF 摄取、缓存和 OCR 路线 | 已能受控归档网页和附件，但非知识摄取产品管线 | 产品缺口 | 来源 adapter 与哈希清单统一，OCR 结果与原件分离 |
@@ -84,7 +88,7 @@ LLM：在上述约束内完成语义提取、综合、比较、矛盾判断和�
 
 当前 `search_notes` 在思源内核侧搜索允许笔记本、按文档去重，并把每条片段限制为最多 360 字符。内核扫描本身不等量占用模型上下文；真正昂贵的是返回宽树、大量候选和完整正文。
 
-插件后续应通过 Raw manifest 和 authority registry 把大多数任务推进到“直接定位”，而不是首先增加向量数据库。
+0.6.0 起优先调用 `find_wiki_candidates`：已知 `sourceId` 时直接做来源到权威页定位，未知时用标题/别名候选；无结果再回退 `search_notes`。这把大多数已登记任务推进到“直接定位”，不需要首先增加向量数据库。
 
 ## 5. 产品架构目标
 
@@ -124,6 +128,13 @@ Source Manifest ──→ Authority Registry
 5. 紧凑 `find_wiki_candidates`；
 6. 单来源 Ingest plan：候选目标、拟新增/修改页面、引用和影响；
 7. Query 结果 Promote preview。
+
+当前完成度（0.6.0 源码）：
+
+- 已完成：Source Manifest、Authority Registry、六类版本化 Wiki 模板、只读 preview renderer/validator、单来源 Ingest 状态机，以及 `register_knowledge_source`、`register_wiki_authority`、`knowledge_status`、`find_wiki_candidates`、`list_wiki_templates`、`render_wiki_template`、`validate_wiki_template`、`plan_source_ingest`；
+- 已覆盖：串行化并发写、来源 ID/文档/哈希/URL 去重、双向引用、竞争权威页报告、访问范围过滤、确定性排序和空结果回退；
+- 尚未完成：`scanRaw`、可恢复的多步 Ingest 执行会话、Promote preview；
+- 尚未完成门禁：把 0.6.0 安装到真实思源后做 27 工具发现、模板与 Ingest 预演只读调用、登记/重复/权限拒绝/重载持久化烟测。
 
 验收：
 
@@ -194,7 +205,7 @@ Source Manifest ──→ Authority Registry
 
 ## 7. 优先级与不建议事项
 
-最高优先级是 M1 的 Source Manifest、Authority Registry 和一条来源闭环。它们同时减少重复、降低上下文消耗，并为后续证据索引和任务恢复提供稳定 ID。
+最高优先级已经从“单条来源预演”推进到“可恢复的单条来源执行会话”：在不放松逐项权限、确认和回读的前提下记录步骤、状态与失败恢复。随后再做 Promote preview；`scanRaw` 仍只发现候选，不自动触发语义写入。
 
 暂不建议：
 

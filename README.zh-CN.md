@@ -6,7 +6,7 @@
 |---|---|
 | **品牌** | 思源大师 / SiYuanMaster |
 | **包名** | `siyuanmaster` |
-| **版本** | `0.5.2` |
+| **版本** | `0.6.0` |
 | **技术插件 ID** | `siyuanmaster` |
 | **MCP 命名空间** | `plugin__siyuanmaster__*` |
 | **仓库** | https://github.com/mixyoung/siyuanmaster |
@@ -28,7 +28,7 @@
 
 - 侧边栏：连接状态、安全策略与 P1 能力状态
 - GUI 配置笔记本访问、操作权限、标签策略与写入安全策略
-- 在 `/mcp` 上注册 **19** 个工具（原 16 + 3 个 P1）；全名为 `plugin__siyuanmaster__*`
+- 在 `/mcp` 上注册 **27** 个工具（原 16 + 3 个 P1 + 8 个知识复利 M1）；全名为 `plugin__siyuanmaster__*`
 - 有界文档树浏览（`list_document_tree`；仅元数据，不返回正文）
 - 路径查找（`resolve_document`，只读）、长文窗口（`read_note_segments`）、块编辑（`edit_block`）
 - 内核强制笔记本边界；笔记本决策下沉到全部子孙
@@ -74,7 +74,7 @@
 
 当策略要求确认时，须先获得用户同意，再带 `confirmed=true` 重试。未获真实确认时不得设置 `confirmed=true`。
 
-## 工具（19 = 原 16 + 3 个 P1）
+## 工具（27 = 原 16 + 3 个 P1 + 8 个知识复利 M1）
 
 全部注册为 `plugin__siyuanmaster__<name>`。
 
@@ -89,6 +89,19 @@
 | `resolve_document` | 按笔记本 + 人类路径（`hPath`）只读查找；写入仍要求精确 ID |
 | `read_note_segments` | 大纲 + 硬上限全块窗口，适合长文 |
 | `edit_block` | 精确块 ID、期望内容/哈希、引用影响、Safe Write Transaction |
+
+**知识复利 M1 新增：**
+
+| 工具 | 作用 |
+|---|---|
+| `register_knowledge_source` | 将一篇允许访问的 Raw 文档登记进私有 Source Manifest；保存 ID、哈希/URL、状态和链接，不保存正文 |
+| `register_wiki_authority` | 登记 Wiki 权威页、别名、页面类型、知识角色及来源双向链接；不生成或改写页面正文 |
+| `knowledge_status` | 按当前访问边界计算来源状态、权威页类型和链接覆盖率，不让模型猜统计值 |
+| `find_wiki_candidates` | 仅用登记标题、别名、类型和来源链接做确定性低上下文候选查找；无结果时回退 `search_notes` |
+| `list_wiki_templates` | 返回六类 Wiki 页的版本、用途、创建门槛、元数据枚举与固定标题顺序 |
+| `render_wiki_template` | 只生成确定性 Markdown 草稿预览；明确返回 `writeExecuted=false`，不创建或更新笔记 |
+| `validate_wiki_template` | 只检查标题、必需章节顺序/重复和元数据；不写笔记，额外二级标题仅警告 |
+| `plan_source_ingest` | 将一条精确 Raw、注册表/候选证据、创建门槛和模板选择编排成只读状态与有序操作计划；计划中的写入仍需后续逐项授权，工具本身不执行写入 |
 
 结构类工具 `rename_note` / `move_note` 使用两阶段、一次性 `previewToken`。跨笔记本移动为独立权限，默认拒绝。
 
@@ -138,7 +151,7 @@ cargo test --workspace
 
 ### MCP 发现冒烟（可选）
 
-需要本机思源已运行且设置 `SIYUAN_API_TOKEN`。仅 loopback；Token 从不打印。按 `catalog/capabilities.json` 精确校验 19 个 `plugin__siyuanmaster__*` 工具，并断言旧命名空间 `plugin__siyuan_agent_access__*` 为 0。
+需要本机思源已运行且设置 `SIYUAN_API_TOKEN`。仅 loopback；Token 从不打印。按 `catalog/capabilities.json` 精确校验 27 个 `plugin__siyuanmaster__*` 工具，并断言旧命名空间 `plugin__siyuan_agent_access__*` 为 0。
 
 - **默认 discovery：** 零笔记写入（仅 initialize → session → tools/list + 目录精确匹配）。
 - **`--read-smoke`：** 依次调用两个只读工具 `get_policy` 与 `list_accessible_notebooks`；仅输出 `isError`、`structuredContent` 是否存在、顶层 key，以及顶层数组字段的名称与计数——绝不输出数组元素/值。这两次调用可能写入**仅元数据**审计记录。

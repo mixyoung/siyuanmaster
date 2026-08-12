@@ -48,6 +48,40 @@ Core invariants:
 - use one writer and preserve snapshot, state-recheck, execute-once, and readback gates; and
 - never let knowledge compounding override access policy, confirmation requirements, tagging policy, or uncertain-outcome handling.
 
+When `get_policy.capabilities.knowledgeRegistry` is available:
+
+- call `knowledge_status` for deterministic Source Manifest and Authority Registry counts;
+- call `find_wiki_candidates` before `search_notes`; use `sourceId` for direct source-to-authority lookup when known, otherwise use a focused title/alias query;
+- if the candidate tool returns `fallbackRecommended=true`, continue with the bounded `search_notes` → relevant tree branch → selective read fallback;
+- use `register_knowledge_source` only when the task authorizes metadata mutation and the exact Raw document is already known; it is governed by the active `update` decision;
+- use `register_wiki_authority` only for an existing exact Wiki document after semantic classification has selected its page type and knowledge role; competing authorities are a governance issue, never an automatic merge; and
+- remember that these registry tools do not create, edit, move, or summarize note content. They do not replace the normal write, confirmation, tagging, and readback steps.
+
+If `knowledgeRegistry` is absent, treat the installed plugin as an older capability set and follow the search/tree/manifest fallback in the reference. Never infer that source or authority registration succeeded merely because a Skill describes the workflow.
+
+When `get_policy.capabilities.wikiTemplates` is available:
+
+- call `list_wiki_templates` before creating a new Wiki page and use the selected page type's purpose and creation gate as a real decision constraint;
+- call `render_wiki_template` only after the creation gate passes; treat the returned Markdown as a deterministic draft with `writeExecuted=false`, not as an existing SiYuan document;
+- preserve the rendered H1 and ordered required H2 structure while adding source-grounded content; distinguish fact, inference, judgment, uncertainty, and contradiction inside the sections;
+- call `validate_wiki_template` on the completed draft with `requireMetadata=true`; resolve every error before proposing a write, and review warnings instead of deleting useful user-authored sections automatically;
+- use `create_note` or `update_note` only as a separate step under the active access, confirmation, tagging, expected-state, and readback rules; then re-read the real note and, when authorized, register the exact authority document; and
+- never claim that list/render/validate created, updated, registered, or verified a real note. These three tools are read-only catalog/preview/check operations.
+
+If `wikiTemplates` is absent, use the templates in the reference directly and validate their structure manually. Do not call or invent unavailable template tools.
+
+When `get_policy.capabilities.sourceIngestPlan` is available, use `plan_source_ingest` to keep one-source Ingest decisions explicit:
+
+- start with the exact immutable Raw `sourceDocumentId`, stable source identity when grounded, and the intended allowed Wiki notebook;
+- leave `discoveryState="registry_only"` until focused `search_notes` and any necessary bounded `list_document_tree`/selective reads have actually found no authority; a registry miss alone never proves absence;
+- pass `selectedAuthorityDocumentId` only after semantic review selects that exact existing page; candidate ranking never selects or merges for you;
+- pass `creationGateDecision="passed"` only when the classification layer has decided the source warrants an independently maintained Wiki page, and pass `failed` to keep it in Raw without fan-out;
+- treat `readyForWorkflow=true` as permission to begin the returned sequence, never as write authorization. `readyForMutation` remains false, planned mutation entries still require their normal policy, confirmation, tagging, state, and readback gates; and
+- inspect the structured `impact` summary for existing Wiki document IDs, proposed creation, Raw registration, and planned mutation count; it is an impact preview, not proof that any operation ran; and
+- treat every result as a read-only preview (`previewOnly=true`, `writeExecuted=false`). Re-plan after discovery, selection, source identity, policy, or document state changes.
+
+If `sourceIngestPlan` is absent, follow the reference's staged discovery and Ingest sequence manually. Never claim an Ingest plan was generated or executed by an older plugin.
+
 ## Offline webpage archive
 
 Use this workflow when the user wants a webpage to remain visually available after the source link changes or disappears.

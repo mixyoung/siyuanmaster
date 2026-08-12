@@ -498,7 +498,7 @@ mod tests {
         let token = engine.issue("cli-agent", &["op:read"], 120, 1_000).unwrap();
         let verified = engine.verify(&token, Some("op:read"), 1_000).unwrap();
         assert_eq!(verified.claims.sub, "cli-agent");
-        let _ = std::env::remove_var("SIYUANMASTER_TEST_SECRET");
+        std::env::remove_var("SIYUANMASTER_TEST_SECRET");
     }
 
     #[test]

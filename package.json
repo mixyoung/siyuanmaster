@@ -1,11 +1,11 @@
 {
   "name": "siyuanmaster",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "private": true,
   "description": "SiYuanMaster — policy-aware SiYuan access boundary and safe write tools for trusted local agents.",
   "scripts": {
-    "generate": "node scripts/generate-capabilities.mjs",
-    "check:catalog": "node scripts/check-capabilities.mjs",
+    "generate": "node scripts/generate-capabilities.mjs && node scripts/generate-wiki-templates.mjs",
+    "check:catalog": "node scripts/check-capabilities.mjs && node scripts/check-wiki-templates.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke:mcp": "node scripts/mcp-smoke.mjs",

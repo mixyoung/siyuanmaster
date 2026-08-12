@@ -7,7 +7,7 @@
       "default": "SiYuanMaster",
       "zh-CN": "思源大师"
     },
-    "version": "0.5.2",
+    "version": "0.6.0",
     "minAppVersion": "3.7.0"
   },
   "namespaces": {
@@ -54,6 +54,54 @@
     {
       "name": "read_note_segments",
       "category": "read",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "register_knowledge_source",
+      "category": "knowledge",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
+      "name": "register_wiki_authority",
+      "category": "knowledge",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
+      "name": "knowledge_status",
+      "category": "knowledge",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "find_wiki_candidates",
+      "category": "knowledge",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "list_wiki_templates",
+      "category": "knowledge",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "render_wiki_template",
+      "category": "knowledge",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "validate_wiki_template",
+      "category": "knowledge",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "plan_source_ingest",
+      "category": "knowledge",
       "readOnly": true,
       "confirmDefault": false
     },

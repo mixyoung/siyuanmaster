@@ -6,7 +6,7 @@ SiYuanMaster is a native SiYuan plugin that lets trusted local AI assistants rea
 |---|---|
 | **Brand** | SiYuanMaster / 思源大师 |
 | **Package** | `siyuanmaster` |
-| **Version** | `0.5.2` |
+| **Version** | `0.6.0` |
 | **Technical plugin ID** | `siyuanmaster` |
 | **MCP namespace** | `plugin__siyuanmaster__*` |
 | **Repository** | https://github.com/mixyoung/siyuanmaster |
@@ -28,7 +28,7 @@ SiYuanMaster runs inside SiYuan as a desktop plugin. It registers policy-aware t
 
 - Sidebar: connection status, safety policy, and P1 capability status
 - GUI configuration for notebook access, operations, tagging, and write safety
-- **19** tools on `/mcp` (original 16 + 3 P1): fully-qualified names are `plugin__siyuanmaster__*`
+- **27** tools on `/mcp` (original 16 + 3 P1 + 8 knowledge-compounding M1): fully-qualified names are `plugin__siyuanmaster__*`
 - Bounded document-tree browsing (`list_document_tree`; metadata only, never full bodies)
 - Path lookup (`resolve_document`, read-only), long-note windows (`read_note_segments`), block edit (`edit_block`)
 - Kernel-enforced notebook boundaries; notebook decisions apply to descendants
@@ -74,7 +74,7 @@ Recommended first calls:
 
 When policy requires confirmation, obtain user approval, then retry with `confirmed=true`. Never set `confirmed=true` without real approval.
 
-## Tools (19 = original 16 + 3 P1)
+## Tools (27 = original 16 + 3 P1 + 8 knowledge-compounding M1)
 
 All tools are registered as `plugin__siyuanmaster__<name>`.
 
@@ -89,6 +89,19 @@ All tools are registered as `plugin__siyuanmaster__<name>`.
 | `resolve_document` | Read-only lookup by notebook + human path (`hPath`); writes still require exact IDs |
 | `read_note_segments` | Outline + hard-capped full-block windows for long notes. Optional `includeStateHash=true` attaches a 64-char lowercase SHA-256 `stateHash` per **returned window** block from exact `getBlockKramdown` (not SQL text; never hashes the full document). Use those hashes as `edit_block.expectedHash`. |
 | `edit_block` | Exact block ID; `expectedContent` or `expectedHash`; reference impact; Safe Write Transaction (snapshot → confirm → recheck → execute once → readback; never retries a failed write). `validateOnly=true` runs the full preflight and returns `mode=validated` / `writeExecuted=false` without any write API (even if `confirmed=true`). Audit metadata sets `preview=true` for validateOnly and `preview=false` for a real edit (metadata only; no bodies/hashes). |
+
+**Knowledge-compounding M1 additions:**
+
+| Tool | Role |
+|---|---|
+| `register_knowledge_source` | Registers one allowed Raw document in the private Source Manifest; stores IDs, hash/URL, state, and links, never the note body |
+| `register_wiki_authority` | Registers a Wiki authority page, aliases, page type, role, and bidirectional source links; never generates or edits page content |
+| `knowledge_status` | Computes access-filtered source states, authority types, and linkage coverage without model-estimated counts |
+| `find_wiki_candidates` | Deterministic low-context lookup over registered titles, aliases, types, and source links; falls back to `search_notes` when empty |
+| `list_wiki_templates` | Returns the version, purpose, creation gate, metadata enums, and ordered headings for all six Wiki page types |
+| `render_wiki_template` | Produces a deterministic Markdown draft preview with `writeExecuted=false`; never creates or updates a note |
+| `validate_wiki_template` | Checks title, required heading order/duplicates, and metadata without writing; additional H2 headings are warnings |
+| `plan_source_ingest` | Turns one exact Raw source plus registry/discovery evidence, a caller-owned creation gate, and template choice into a read-only state and ordered workflow; listed mutations remain separately gated and are never executed by the plan tool |
 
 Structural tools `rename_note` / `move_note` use a two-step, one-time `previewToken`. Cross-notebook moves are a separate permission and are denied by default.
 
@@ -124,7 +137,7 @@ These are optional local helpers. They do not replace the TypeScript plugin path
 Evidence from a **real local SiYuan 3.8.0-alpha.2** instance (dedicated disposable notebook; plugin tools only):
 
 - MCP `initialize` negotiated protocol **`2025-03-26`**
-- `tools/list`: **51** tools total — **19** `plugin__siyuanmaster__*`, **0** legacy `plugin__siyuan_agent_access__*`
+- Last 0.5.2 live baseline: `tools/list` had **51** tools total — **19** `plugin__siyuanmaster__*`, **0** legacy `plugin__siyuan_agent_access__*`. Re-run live smoke after installing 0.6.0; do not reuse that count as 0.6.0 evidence.
 - Read smoke: `get_policy`, `list_accessible_notebooks`
 - Full write smoke (writes never retried): `create_note` → visibility `read_note` → `resolve_document` → `read_note_segments(includeStateHash=true)` → `edit_block validateOnly=true` (no write) → **one** confirmed `edit_block` committed and verified → post-edit `read_note` → **one** `update_note` → final `read_note` → `delete_note` cleanup
 - Audit metadata distinguishes validateOnly (`preview=true`) from real edit (`preview=false`)
@@ -150,7 +163,7 @@ cargo test --workspace
 
 ### MCP discovery smoke (optional)
 
-Requires a running local SiYuan and `SIYUAN_API_TOKEN`. Loopback only; the token is never printed. Validates the 19 `plugin__siyuanmaster__*` tools against `catalog/capabilities.json` and asserts zero legacy `plugin__siyuan_agent_access__*` names.
+Requires a running local SiYuan and `SIYUAN_API_TOKEN`. Loopback only; the token is never printed. Validates the 27 `plugin__siyuanmaster__*` tools against `catalog/capabilities.json` and asserts zero legacy `plugin__siyuan_agent_access__*` names.
 
 - **Default discovery:** zero note writes (initialize → session → tools/list + catalog match only).
 - **`--read-smoke`:** sequentially calls the two read-only tools `get_policy` and `list_accessible_notebooks`; prints only `isError`, whether `structuredContent` is present, top-level keys, and top-level array field names/counts — never array elements or values. These calls may write **metadata-only audit** entries.

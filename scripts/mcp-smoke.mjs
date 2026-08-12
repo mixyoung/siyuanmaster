@@ -10,7 +10,7 @@
 // - Token only from SIYUAN_API_TOKEN; never printed
 // - Fail closed on HTTP, JSON-RPC error, or result.isError
 // - Errors never include raw HTTP/SSE/JSON-RPC body text or fragments
-// - Exact catalog match for 19 plugin__siyuanmaster__* tools; legacy namespace count = 0
+// - Exact catalog match for 27 plugin__siyuanmaster__* tools; legacy namespace count = 0
 //
 // Default discovery: zero note writes.
 // --read-smoke: two read-only tools; may produce metadata-only audit entries.
@@ -24,11 +24,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_MCP_URL = "http://127.0.0.1:6806/mcp";
 const DEFAULT_TIMEOUT_MS = 10_000;
-const EXPECTED_PLUGIN_TOOL_COUNT = 19;
+const EXPECTED_PLUGIN_TOOL_COUNT = 27;
 const LEGACY_NAMESPACE = "plugin__siyuan_agent_access__";
 const CLIENT_INFO = {
   name: "siyuanmaster-mcp-smoke",
-  version: "0.5.2",
+  version: "0.6.0",
 };
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));

@@ -1,0 +1,462 @@
+{
+  "schemaVersion": 1,
+  "templateVersion": "1.0.0",
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "defaults": {
+    "locale": "zh-CN",
+    "status": "draft",
+    "evidenceStatus": "insufficient"
+  },
+  "metadata": {
+    "knowledgeRoles": [
+      "synthesis",
+      "chapter",
+      "governance"
+    ],
+    "statuses": [
+      "draft",
+      "active",
+      "deprecated",
+      "archived"
+    ],
+    "evidenceStatuses": [
+      "supported",
+      "mixed",
+      "disputed",
+      "insufficient"
+    ]
+  },
+  "templates": [
+    {
+      "pageType": "topic",
+      "titlePlaceholder": {
+        "zh-CN": "稳定主题",
+        "en": "stable topic"
+      },
+      "purpose": {
+        "zh-CN": "综合一个边界稳定、由多类来源共同支撑的主题。",
+        "en": "Synthesize one stable subject supported by multiple source types."
+      },
+      "creationGate": {
+        "zh-CN": "只有形成可持续维护的主题边界时才创建，不能仅因资料共享关键词。",
+        "en": "Create only for a durable subject boundary, never merely because sources share a keyword."
+      },
+      "headings": [
+        {
+          "key": "scope_boundaries",
+          "label": {
+            "zh-CN": "范围与边界",
+            "en": "Scope and boundaries"
+          }
+        },
+        {
+          "key": "executive_summary",
+          "label": {
+            "zh-CN": "执行摘要",
+            "en": "Executive summary"
+          }
+        },
+        {
+          "key": "core_concepts",
+          "label": {
+            "zh-CN": "核心概念",
+            "en": "Core concepts"
+          }
+        },
+        {
+          "key": "mechanism_structure",
+          "label": {
+            "zh-CN": "工作机制与结构",
+            "en": "How it works / structure"
+          }
+        },
+        {
+          "key": "evidence_conclusions",
+          "label": {
+            "zh-CN": "有证据支持的结论",
+            "en": "Evidence-backed conclusions"
+          }
+        },
+        {
+          "key": "alternatives_comparisons",
+          "label": {
+            "zh-CN": "替代方案与比较",
+            "en": "Alternatives or comparisons"
+          }
+        },
+        {
+          "key": "contradictions_questions",
+          "label": {
+            "zh-CN": "矛盾与开放问题",
+            "en": "Contradictions and open questions"
+          }
+        },
+        {
+          "key": "sources",
+          "label": {
+            "zh-CN": "来源",
+            "en": "Sources"
+          }
+        },
+        {
+          "key": "revision_notes",
+          "label": {
+            "zh-CN": "修订记录",
+            "en": "Revision notes"
+          }
+        }
+      ]
+    },
+    {
+      "pageType": "concept",
+      "titlePlaceholder": {
+        "zh-CN": "概念",
+        "en": "concept"
+      },
+      "purpose": {
+        "zh-CN": "维护可复用、有清晰边界和关系的概念定义。",
+        "en": "Maintain a reusable concept with a clear definition, boundary, and relations."
+      },
+      "creationGate": {
+        "zh-CN": "只有需要独立复用和维护时才创建；次要术语优先作为主题页章节。",
+        "en": "Create only when independent reuse and maintenance are warranted; keep minor terms inside a topic page."
+      },
+      "headings": [
+        {
+          "key": "definition",
+          "label": {
+            "zh-CN": "定义",
+            "en": "Definition"
+          }
+        },
+        {
+          "key": "not_definition",
+          "label": {
+            "zh-CN": "不是什么",
+            "en": "What it is not"
+          }
+        },
+        {
+          "key": "mechanism_principles",
+          "label": {
+            "zh-CN": "机制与原理",
+            "en": "Mechanism or principles"
+          }
+        },
+        {
+          "key": "related_concepts",
+          "label": {
+            "zh-CN": "相关概念",
+            "en": "Related concepts"
+          }
+        },
+        {
+          "key": "examples_counterexamples",
+          "label": {
+            "zh-CN": "示例与反例",
+            "en": "Examples and counterexamples"
+          }
+        },
+        {
+          "key": "evidence_limitations",
+          "label": {
+            "zh-CN": "证据与局限",
+            "en": "Evidence and limitations"
+          }
+        },
+        {
+          "key": "sources",
+          "label": {
+            "zh-CN": "来源",
+            "en": "Sources"
+          }
+        }
+      ]
+    },
+    {
+      "pageType": "entity",
+      "titlePlaceholder": {
+        "zh-CN": "规范实体名",
+        "en": "canonical entity name"
+      },
+      "purpose": {
+        "zh-CN": "维护会随时间独立更新的人、组织、项目、产品、标准或其他实体。",
+        "en": "Maintain a person, organization, project, product, standard, or other independently evolving entity."
+      },
+      "creationGate": {
+        "zh-CN": "只有实体需要独立更新、关系或时间线时才创建。",
+        "en": "Create only when the entity warrants independent updates, relationships, or a timeline."
+      },
+      "headings": [
+        {
+          "key": "identity_aliases",
+          "label": {
+            "zh-CN": "身份与别名",
+            "en": "Identity and aliases"
+          }
+        },
+        {
+          "key": "current_state",
+          "label": {
+            "zh-CN": "当前状态",
+            "en": "Current state"
+          }
+        },
+        {
+          "key": "timeline",
+          "label": {
+            "zh-CN": "时间线",
+            "en": "Timeline"
+          }
+        },
+        {
+          "key": "relationships",
+          "label": {
+            "zh-CN": "关系",
+            "en": "Relationships"
+          }
+        },
+        {
+          "key": "evidence_claims",
+          "label": {
+            "zh-CN": "有证据支持的主张",
+            "en": "Evidence-backed claims"
+          }
+        },
+        {
+          "key": "disputes_unknowns",
+          "label": {
+            "zh-CN": "争议与未知",
+            "en": "Disputes and unknowns"
+          }
+        },
+        {
+          "key": "sources",
+          "label": {
+            "zh-CN": "来源",
+            "en": "Sources"
+          }
+        }
+      ]
+    },
+    {
+      "pageType": "comparison",
+      "titlePlaceholder": {
+        "zh-CN": "比较问题",
+        "en": "comparison question"
+      },
+      "purpose": {
+        "zh-CN": "围绕稳定的决策问题和比较维度分析明确候选项。",
+        "en": "Compare explicit candidates around a stable decision question and dimensions."
+      },
+      "creationGate": {
+        "zh-CN": "只有候选项、决策问题和比较维度都稳定时才创建。",
+        "en": "Create only when candidates, the decision question, and comparison dimensions are stable."
+      },
+      "headings": [
+        {
+          "key": "decision_context",
+          "label": {
+            "zh-CN": "决策背景",
+            "en": "Decision context"
+          }
+        },
+        {
+          "key": "candidates_scope",
+          "label": {
+            "zh-CN": "候选项与范围",
+            "en": "Candidates and scope"
+          }
+        },
+        {
+          "key": "comparison_dimensions",
+          "label": {
+            "zh-CN": "比较维度",
+            "en": "Comparison dimensions"
+          }
+        },
+        {
+          "key": "comparison_matrix",
+          "label": {
+            "zh-CN": "比较矩阵",
+            "en": "Comparison matrix"
+          }
+        },
+        {
+          "key": "conditional_analysis",
+          "label": {
+            "zh-CN": "条件化分析",
+            "en": "Analysis by condition"
+          }
+        },
+        {
+          "key": "conclusion_exceptions",
+          "label": {
+            "zh-CN": "结论与例外",
+            "en": "Conclusion and exceptions"
+          }
+        },
+        {
+          "key": "evidence_freshness_gaps",
+          "label": {
+            "zh-CN": "证据时效与缺口",
+            "en": "Evidence freshness and gaps"
+          }
+        },
+        {
+          "key": "sources",
+          "label": {
+            "zh-CN": "来源",
+            "en": "Sources"
+          }
+        }
+      ]
+    },
+    {
+      "pageType": "insight",
+      "titlePlaceholder": {
+        "zh-CN": "可证伪洞见",
+        "en": "falsifiable insight"
+      },
+      "purpose": {
+        "zh-CN": "维护由多来源推导、可证伪且边界清楚的复用结论。",
+        "en": "Maintain a reusable, falsifiable conclusion derived from multiple sources with explicit boundaries."
+      },
+      "creationGate": {
+        "zh-CN": "只有事实、推理、反证和边界条件能够明确区分时才创建。",
+        "en": "Create only when facts, reasoning, counterevidence, and boundary conditions can be distinguished."
+      },
+      "headings": [
+        {
+          "key": "claim",
+          "label": {
+            "zh-CN": "主张",
+            "en": "Claim"
+          }
+        },
+        {
+          "key": "supporting_evidence",
+          "label": {
+            "zh-CN": "支持证据",
+            "en": "Supporting evidence"
+          }
+        },
+        {
+          "key": "reasoning_chain",
+          "label": {
+            "zh-CN": "推理链",
+            "en": "Reasoning chain"
+          }
+        },
+        {
+          "key": "boundary_conditions",
+          "label": {
+            "zh-CN": "边界条件",
+            "en": "Boundary conditions"
+          }
+        },
+        {
+          "key": "counterevidence_alternatives",
+          "label": {
+            "zh-CN": "反证与替代解释",
+            "en": "Counterevidence and alternatives"
+          }
+        },
+        {
+          "key": "confidence_update_triggers",
+          "label": {
+            "zh-CN": "置信度与更新触发条件",
+            "en": "Confidence and update triggers"
+          }
+        },
+        {
+          "key": "implications",
+          "label": {
+            "zh-CN": "影响",
+            "en": "Implications"
+          }
+        },
+        {
+          "key": "sources",
+          "label": {
+            "zh-CN": "来源",
+            "en": "Sources"
+          }
+        }
+      ]
+    },
+    {
+      "pageType": "source_summary",
+      "titlePlaceholder": {
+        "zh-CN": "来源标题",
+        "en": "source title"
+      },
+      "titleSuffix": {
+        "zh-CN": "：摘要",
+        "en": ": Summary"
+      },
+      "purpose": {
+        "zh-CN": "为一条来源创建可演进的摘要页，同时保留不可变 Raw 原件。",
+        "en": "Create an evolvable summary for one source while preserving the immutable Raw original."
+      },
+      "creationGate": {
+        "zh-CN": "仅在单条来源值得独立摘要、复查或关联多页时创建，永不替代 Raw 原件。",
+        "en": "Create only when one source warrants independent summary, review, or multi-page links; never replace the Raw original."
+      },
+      "headings": [
+        {
+          "key": "source_metadata",
+          "label": {
+            "zh-CN": "来源元数据",
+            "en": "Source metadata"
+          }
+        },
+        {
+          "key": "central_thesis",
+          "label": {
+            "zh-CN": "核心论点",
+            "en": "Central thesis"
+          }
+        },
+        {
+          "key": "method_evidence_base",
+          "label": {
+            "zh-CN": "方法与证据基础",
+            "en": "Method or evidence base"
+          }
+        },
+        {
+          "key": "key_claims",
+          "label": {
+            "zh-CN": "关键主张",
+            "en": "Key claims"
+          }
+        },
+        {
+          "key": "limitations_disputes",
+          "label": {
+            "zh-CN": "局限与争议",
+            "en": "Limitations and disputes"
+          }
+        },
+        {
+          "key": "affected_wiki_pages",
+          "label": {
+            "zh-CN": "受影响的 Wiki 页面",
+            "en": "Links to affected Wiki pages"
+          }
+        },
+        {
+          "key": "raw_source",
+          "label": {
+            "zh-CN": "Raw 原始来源",
+            "en": "Raw source"
+          }
+        }
+      ]
+    }
+  ]
+}

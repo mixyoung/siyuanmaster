@@ -793,13 +793,11 @@ mod tests {
             catalog,
         });
         let _handle = std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                if let Ok(stream) = stream {
-                    let state = Arc::clone(&state);
-                    let _ = std::thread::spawn(move || {
-                        let _ = handle_connection(stream, &state);
-                    });
-                }
+            for stream in listener.incoming().flatten() {
+                let state = Arc::clone(&state);
+                let _ = std::thread::spawn(move || {
+                    let _ = handle_connection(stream, &state);
+                });
             }
         });
         let _ = (admin_env_name, admin_env_value);
@@ -886,7 +884,7 @@ mod tests {
         assert_eq!(parsed["product"]["id"], "siyuanmaster");
         assert_eq!(parsed["product"]["technicalId"], "siyuanmaster");
         assert_eq!(parsed["namespaces"]["plugin"], "plugin__siyuanmaster__");
-        assert_eq!(parsed["pluginTools"].as_array().unwrap().len(), 19);
+        assert_eq!(parsed["pluginTools"].as_array().unwrap().len(), 27);
     }
 
     #[test]

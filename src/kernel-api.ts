@@ -191,6 +191,30 @@ export class KernelApiClient {
     return rows[0];
   }
 
+  async listExactDocumentsByIds(ids: string[]): Promise<BlockRecord[]> {
+    const uniqueIds = [
+      ...new Set(ids.map((id) => assertSiyuanId(id, "documentId"))),
+    ];
+    const results: BlockRecord[] = [];
+    for (let offset = 0; offset < uniqueIds.length; offset += 200) {
+      const chunk = uniqueIds.slice(offset, offset + 200);
+      if (chunk.length === 0) {
+        continue;
+      }
+      const idList = chunk
+        .map((id) => `'${escapeSqlLiteral(id)}'`)
+        .join(", ");
+      results.push(
+        ...(await this.sql<BlockRecord>(
+          `SELECT id, root_id, box, path, hpath, name, alias, memo, tag, content, type, subtype, created, updated
+           FROM blocks
+           WHERE type = 'd' AND id IN (${idList})`,
+        )),
+      );
+    }
+    return results;
+  }
+
   async getDocumentContext(id: string): Promise<DocumentContext> {
     const requested = await this.getBlock(id);
     const documentId =

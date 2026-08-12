@@ -275,7 +275,7 @@ export default class SiYuanMasterPlugin extends Plugin {
         <section class="sym-ledger">
           <div class="sym-ledger__row">
             <span>P1 能力</span>
-            <strong>19 工具 · Safe Write</strong>
+            <strong>3 项 · Safe Write</strong>
           </div>
           <div class="sym-ledger__row">
             <span>路径查找</span>
@@ -288,6 +288,10 @@ export default class SiYuanMasterPlugin extends Plugin {
           <div class="sym-ledger__row">
             <span>安全块编辑</span>
             <strong>edit_block</strong>
+          </div>
+          <div class="sym-ledger__row">
+            <span>知识复利 M1</span>
+            <strong>Registry · Templates · Ingest Plan</strong>
           </div>
           <div class="sym-ledger__row">
             <span>技术 ID</span>
@@ -704,8 +708,12 @@ export default class SiYuanMasterPlugin extends Plugin {
                   <strong>resolve_document · read_note_segments · edit_block</strong>
                 </div>
                 <div class="sym-ledger__row">
+                  <span>知识复利 M1</span>
+                  <strong>Source Manifest · Authority Registry · 候选查找</strong>
+                </div>
+                <div class="sym-ledger__row">
                   <span>工具总数</span>
-                  <strong>19（含原 16）</strong>
+                  <strong>27（含原 16）</strong>
                 </div>
                 <div class="sym-ledger__row">
                   <span>命名空间</span>

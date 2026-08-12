@@ -38,7 +38,7 @@ import {
 const PLUGIN_NS = "plugin__siyuanmaster__";
 const PROTOCOL_VERSION = "2025-03-26";
 
-const CATALOG_19 = {
+const CATALOG_27 = {
   namespaces: { plugin: PLUGIN_NS },
   pluginTools: [
     "get_policy",
@@ -48,6 +48,14 @@ const CATALOG_19 = {
     "read_note",
     "resolve_document",
     "read_note_segments",
+    "register_knowledge_source",
+    "register_wiki_authority",
+    "knowledge_status",
+    "find_wiki_candidates",
+    "list_wiki_templates",
+    "render_wiki_template",
+    "validate_wiki_template",
+    "plan_source_ingest",
     "create_note",
     "append_note",
     "update_note",
@@ -68,7 +76,7 @@ const CATALOG_19 = {
   })),
 };
 
-const FQ_19 = CATALOG_19.pluginTools.map((t) => `${PLUGIN_NS}${t.name}`);
+const FQ_27 = CATALOG_27.pluginTools.map((t) => `${PLUGIN_NS}${t.name}`);
 
 // Strict SiYuan ids: /^\d{14}-[a-z0-9]{7}$/ (7-char suffix)
 const NOTEBOOK_ID = "20240101120000-nbok001";
@@ -438,7 +446,7 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
       return jsonResponse({
         jsonrpc: "2.0",
         id: body.id,
-        result: { tools: FQ_19.map((name) => ({ name })) },
+        result: { tools: FQ_27.map((name) => ({ name })) },
       });
     }
     if (body.method === "tools/call") {
@@ -1242,7 +1250,7 @@ async function runWrite(
     url: URL,
     notebookId: NOTEBOOK_ID,
     confirmDestructiveSmoke: true,
-    catalog: CATALOG_19,
+    catalog: CATALOG_27,
     fetchImpl,
     log: (line: string) => logs.push(line),
     identityFactory: () => ({ title: TITLE, bodyMarker: BODY_MARKER }),
@@ -2078,7 +2086,6 @@ describe("mcp-write-smoke pure helpers", () => {
     expect(a.editMarker).not.toBe(b.editMarker);
   });
 });
-
 // ---------------------------------------------------------------------------
 // CLI guards
 // ---------------------------------------------------------------------------
@@ -2163,7 +2170,6 @@ describe("mcp-write-smoke CLI guards", () => {
     ).toThrow(/notebook-id/);
   });
 });
-
 describe("mcp-write-smoke main exitCode (no process.exit)", () => {
   const prevExitCode = process.exitCode;
   let exitSpy: ReturnType<typeof vi.spyOn>;
@@ -2286,7 +2292,6 @@ describe("mcp-write-smoke main exitCode (no process.exit)", () => {
     expect(errors.join("\n")).toMatch(/invalid --notebook-id format/);
   });
 });
-
 // ---------------------------------------------------------------------------
 // Orchestration with mocked MCP transport
 // ---------------------------------------------------------------------------
@@ -2301,7 +2306,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: NOTEBOOK_ID,
         confirmDestructiveSmoke: false,
-        catalog: CATALOG_19,
+        catalog: CATALOG_27,
         fetchImpl: makeWriteFetch() as typeof fetch,
         log: silent,
       }),
@@ -2324,7 +2329,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: "not-valid-id",
         confirmDestructiveSmoke: true,
-        catalog: CATALOG_19,
+        catalog: CATALOG_27,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
       }),
@@ -2986,7 +2991,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: NOTEBOOK_ID,
         confirmDestructiveSmoke: true,
-        catalog: CATALOG_19,
+        catalog: CATALOG_27,
         fetchImpl: makeWriteFetch({
           capture,
           failTool: "update_note",
@@ -3050,7 +3055,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: NOTEBOOK_ID,
         confirmDestructiveSmoke: true,
-        catalog: CATALOG_19,
+        catalog: CATALOG_27,
         fetchImpl: makeWriteFetch({
           capture,
           deleteResult: "fail-once-then-ok",
@@ -3097,7 +3102,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: NOTEBOOK_ID,
         confirmDestructiveSmoke: true,
-        catalog: CATALOG_19,
+        catalog: CATALOG_27,
         fetchImpl: makeWriteFetch({
           capture,
           deleteResult: "ok-false",

@@ -34,6 +34,39 @@ import {
   normalizeDocumentTitle,
 } from "./kernel-api";
 import {
+  findWikiCandidates,
+  KnowledgeRegistryError,
+  KnowledgeRegistryStore,
+  KNOWLEDGE_ROLES,
+  SOURCE_STATES,
+  refreshAccessibleKnowledgeRegistry,
+  summarizeKnowledgeRegistry,
+  WIKI_PAGE_TYPES,
+  type KnowledgeRole,
+  type KnowledgeRegistry,
+  type SourceState,
+  type WikiPageType,
+} from "./knowledge-registry";
+import {
+  CREATION_GATE_DECISIONS,
+  INGEST_DISCOVERY_STATES,
+  IngestPlanError,
+  planSourceIngest,
+  type CreationGateDecision,
+  type IngestDiscoveryState,
+} from "./ingest-plan";
+import {
+  listWikiTemplates,
+  renderWikiTemplate,
+  validateWikiTemplate,
+  WIKI_EVIDENCE_STATUSES,
+  WIKI_STATUSES,
+  WIKI_TEMPLATE_LOCALES,
+  type WikiEvidenceStatus,
+  type WikiStatus,
+  type WikiTemplateLocale,
+} from "./wiki-template";
+import {
   evaluateOperation,
   mergeTags,
   normalizeTags,
@@ -161,6 +194,126 @@ function optionalString(value: unknown): string | undefined {
     : undefined;
 }
 
+function stringArrayInput(
+  value: unknown,
+  label: string,
+  maximumItems: number,
+  maximumLength: number,
+): string[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value) || value.length > maximumItems) {
+    throw new PolicyViolation(
+      "invalid_request",
+      `${label} must be an array with at most ${maximumItems} items`,
+    );
+  }
+  return [
+    ...new Set(
+      value.map((item, index) =>
+        stringInput(item, `${label}[${index}]`, {
+          maxLength: maximumLength,
+        }).trim(),
+      ),
+    ),
+  ];
+}
+
+function enumInput<T extends readonly string[]>(
+  value: unknown,
+  label: string,
+  options: T,
+): T[number] {
+  const result = stringInput(value, label, { maxLength: 64 }).trim();
+  if (!options.includes(result)) {
+    throw new PolicyViolation(
+      "invalid_request",
+      `${label} must be one of: ${options.join(", ")}`,
+    );
+  }
+  return result as T[number];
+}
+
+function optionalSha256(value: unknown): string | undefined {
+  const result = optionalString(value)?.toLowerCase();
+  if (result && !/^[a-f0-9]{64}$/.test(result)) {
+    throw new PolicyViolation(
+      "invalid_request",
+      "sha256 must contain exactly 64 hexadecimal characters",
+    );
+  }
+  return result;
+}
+
+function optionalCanonicalUrl(value: unknown): string | undefined {
+  const result = optionalString(value);
+  if (!result) {
+    return undefined;
+  }
+  if (result.length > 2_048) {
+    throw new PolicyViolation(
+      "invalid_request",
+      "canonicalUrl must not exceed 2048 characters",
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(result);
+  } catch {
+    throw new PolicyViolation(
+      "invalid_request",
+      "canonicalUrl must be a valid HTTP or HTTPS URL",
+    );
+  }
+  if (
+    !["http:", "https:"].includes(parsed.protocol) ||
+    parsed.username ||
+    parsed.password
+  ) {
+    throw new PolicyViolation(
+      "invalid_request",
+      "canonicalUrl must be an HTTP(S) URL without embedded credentials",
+    );
+  }
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+function optionalIsoDate(value: unknown): string | undefined {
+  const result = optionalString(value);
+  if (!result) {
+    return undefined;
+  }
+  if (
+    result.length > 64 ||
+    !/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))?$/.test(
+      result,
+    ) ||
+    Number.isNaN(Date.parse(result))
+  ) {
+    throw new PolicyViolation(
+      "invalid_request",
+      "reviewedAt must be an ISO date or timestamp",
+    );
+  }
+  return result;
+}
+
+function sourceIdInput(value: unknown, documentId: string): string {
+  const result = optionalString(value) ?? `siyuan:${documentId}`;
+  if (
+    result.length > 128 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(result)
+  ) {
+    throw new PolicyViolation(
+      "invalid_request",
+      "sourceId must be 1-128 URL-safe identifier characters",
+    );
+  }
+  return result;
+}
+
 function documentTitleInput(value: unknown): string {
   try {
     return normalizeDocumentTitle(value);
@@ -240,6 +393,9 @@ class SiYuanMasterKernelPlugin {
     this.api,
     () => this.policy,
   );
+  private readonly knowledgeRegistry = new KnowledgeRegistryStore(
+    this.api.storage,
+  );
   private policy: PluginPolicy = clonePolicy(DEFAULT_POLICY);
   private readonly registeredTools: string[] = [];
   private readonly structurePreviews = new Map<
@@ -279,6 +435,14 @@ class SiYuanMasterKernelPlugin {
     await this.registerReadTool();
     await this.registerResolveDocumentTool();
     await this.registerReadNoteSegmentsTool();
+    await this.registerKnowledgeSourceTool();
+    await this.registerWikiAuthorityTool();
+    await this.registerKnowledgeStatusTool();
+    await this.registerFindWikiCandidatesTool();
+    await this.registerListWikiTemplatesTool();
+    await this.registerRenderWikiTemplateTool();
+    await this.registerValidateWikiTemplateTool();
+    await this.registerPlanSourceIngestTool();
     await this.registerCreateTool();
     await this.registerAppendTool();
     await this.registerUpdateTool();
@@ -371,6 +535,10 @@ class SiYuanMasterKernelPlugin {
         readNoteSegments: true,
         editBlock: true,
         safeWriteTransaction: true,
+        knowledgeRegistry: true,
+        authorityLookup: true,
+        wikiTemplates: true,
+        sourceIngestPlan: true,
         permissionInheritance: this.policy.safety.permissionInheritance,
         referenceProtection: this.policy.safety.referenceProtection,
       },
@@ -693,7 +861,7 @@ class SiYuanMasterKernelPlugin {
           brand: "siyuanmaster",
           displayName: { default: "SiYuanMaster", "zh-CN": "思源大师" },
           technicalId: "siyuanmaster",
-          version: "0.5.2",
+          version: "0.6.0",
           namespace: "plugin__siyuanmaster__",
         },
         access: this.policy.access,
@@ -707,8 +875,16 @@ class SiYuanMasterKernelPlugin {
             "exact block ID + expected content/hash + reference impact + Safe Write Transaction",
           safeWriteTransaction:
             "snapshot → confirm → recheck → execute once → readback; no auto-retry on unknown",
+          knowledgeRegistry:
+            "metadata-only Source Manifest + Authority Registry with access-filtered status and deterministic candidates",
+          authorityLookup:
+            "registered source/title/alias/type lookup before broad note search",
           originalToolsPreserved: 16,
-          totalTools: 19,
+          totalTools: 27,
+          wikiTemplates:
+            "versioned catalog + preview-only renderer + structure validator; no note writes",
+          sourceIngestPlan:
+            "read-only single-source state machine; plans registry, discovery, template, verification, and later gated writes without executing them",
         },
         toolWorkflow: [
           "Call get_policy first.",
@@ -716,6 +892,9 @@ class SiYuanMasterKernelPlugin {
           "Use list_document_tree for bounded structural browsing without note bodies.",
           "Use resolve_document only to look up a human path; never write by path.",
           "Use search_notes / read_note / read_note_segments for retrieval.",
+          "When knowledgeRegistry is available, use find_wiki_candidates before broad search and register sources/authorities only when the current task authorizes metadata mutation.",
+          "When wikiTemplates is available, list the creation gate, render a preview, fill the draft, validate it, and only then use a separately authorized create/update tool.",
+          "Use plan_source_ingest to turn one exact Raw source plus registry/discovery evidence into a read-only state and ordered next-step plan; never treat planned mutations as executed or pre-authorized.",
           "For decisions marked confirm, obtain user approval before retrying with confirmed=true.",
           "In tag mode ask, pass tagging.decision='add' or 'skip' for each write.",
           "Use only plugin__siyuanmaster__* tools when policy enforcement is required.",
@@ -1528,6 +1707,945 @@ class SiYuanMasterKernelPlugin {
                 maxOutlineBlocks: limits.maxOutlineBlocks,
               },
             };
+          },
+        );
+      },
+    );
+  }
+
+  private async liveAccessibleKnowledgeRegistry(): Promise<KnowledgeRegistry> {
+    const registry = await this.knowledgeRegistry.snapshot();
+    const allowedNotebookIds = new Set(await this.accessibleNotebookIds());
+    const liveDocuments = await this.client.listExactDocumentsByIds([
+      ...registry.sources.map((source) => source.documentId),
+      ...registry.authorities.map((authority) => authority.documentId),
+      ...registry.authorities
+        .map((authority) => authority.sourceContainerDocumentId)
+        .filter((id): id is string => Boolean(id)),
+    ]);
+    return refreshAccessibleKnowledgeRegistry(
+      registry,
+      liveDocuments,
+      allowedNotebookIds,
+    );
+  }
+
+  private registryRequestError(error: unknown): never {
+    if (error instanceof KnowledgeRegistryError) {
+      throw new PolicyViolation("invalid_request", error.message);
+    }
+    throw error;
+  }
+
+  private ingestPlanRequestError(error: unknown): never {
+    if (error instanceof IngestPlanError) {
+      throw new PolicyViolation("invalid_request", error.message);
+    }
+    throw error;
+  }
+
+  private async registerKnowledgeSourceTool(): Promise<void> {
+    await this.registerTool(
+      "register_knowledge_source",
+      genericToolConfig(
+        "Register a Raw Knowledge Source",
+        "Upserts one allowed SiYuan source document in the plugin-private Source Manifest. Stores only source metadata, processing state, hash/URL identity, and authority links; never stores the note body. Governed by update permission.",
+        {
+          type: "object",
+          properties: {
+            documentId: {
+              type: "string",
+              description: "Exact allowed Raw source document ID.",
+            },
+            sourceId: {
+              type: "string",
+              description:
+                "Optional stable external identifier. Defaults to siyuan:<documentId>.",
+            },
+            sha256: {
+              type: "string",
+              description:
+                "Optional lowercase SHA-256 for duplicate detection.",
+            },
+            canonicalUrl: {
+              type: "string",
+              description:
+                "Optional canonical HTTP(S) source URL; fragments are removed.",
+            },
+            state: {
+              type: "string",
+              enum: [...SOURCE_STATES],
+              description:
+                "Processing state. Defaults to registered.",
+            },
+            authorityDocumentIds: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional complete set of already-registered Wiki authority document IDs linked to this source.",
+            },
+            operationId: {
+              type: "string",
+              description:
+                "Optional idempotency/workflow correlation identifier.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["documentId"],
+          additionalProperties: false,
+        },
+        false,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const documentId = optionalString(input.documentId);
+        return this.runTool(
+          "register_knowledge_source",
+          false,
+          { documentId, confirmed },
+          async () => {
+            this.ensureOperation("update", confirmed);
+            const context = await this.assertExactDocumentAllowed(
+              input.documentId,
+            );
+            const authorityDocumentIds = stringArrayInput(
+              input.authorityDocumentIds,
+              "authorityDocumentIds",
+              256,
+              64,
+            );
+            for (const authorityId of authorityDocumentIds) {
+              await this.assertExactDocumentAllowed(
+                authorityId,
+                "authorityDocumentIds[]",
+              );
+            }
+            const liveRegistry =
+              await this.liveAccessibleKnowledgeRegistry();
+            const accessibleDocumentIds = [
+              context.document.id,
+              ...authorityDocumentIds,
+              ...liveRegistry.sources.map((source) => source.documentId),
+              ...liveRegistry.authorities.map(
+                (authority) => authority.documentId,
+              ),
+            ];
+            try {
+              return await this.knowledgeRegistry.registerSource({
+                sourceId: sourceIdInput(
+                  input.sourceId,
+                  context.document.id,
+                ),
+                documentId: context.document.id,
+                notebookId: context.document.box,
+                title: context.document.content,
+                hPath: context.document.hpath,
+                sha256: optionalSha256(input.sha256),
+                canonicalUrl: optionalCanonicalUrl(input.canonicalUrl),
+                state:
+                  input.state === undefined
+                    ? "registered"
+                    : (enumInput(
+                        input.state,
+                        "state",
+                        SOURCE_STATES,
+                      ) as SourceState),
+                authorityDocumentIds:
+                  input.authorityDocumentIds === undefined
+                    ? undefined
+                    : authorityDocumentIds,
+                operationId:
+                  input.operationId === undefined
+                    ? undefined
+                    : stringInput(input.operationId, "operationId", {
+                        maxLength: 128,
+                      }).trim(),
+                accessibleDocumentIds,
+              });
+            } catch (error) {
+              return this.registryRequestError(error);
+            }
+          },
+        );
+      },
+    );
+  }
+
+  private async registerWikiAuthorityTool(): Promise<void> {
+    await this.registerTool(
+      "register_wiki_authority",
+      genericToolConfig(
+        "Register a Wiki Authority Page",
+        "Upserts one allowed SiYuan Wiki page in the plugin-private Authority Registry and maintains bidirectional links to registered sources. It does not generate or edit Wiki content. Governed by update permission.",
+        {
+          type: "object",
+          properties: {
+            documentId: {
+              type: "string",
+              description: "Exact allowed Wiki document ID.",
+            },
+            aliases: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional retrieval aliases. Re-registration replaces the alias set.",
+            },
+            pageType: {
+              type: "string",
+              enum: [...WIKI_PAGE_TYPES],
+            },
+            knowledgeRole: {
+              type: "string",
+              enum: [...KNOWLEDGE_ROLES],
+            },
+            sourceContainerDocumentId: {
+              type: "string",
+              description:
+                "Optional exact A-raw/source-container document ID in the same notebook.",
+            },
+            sourceIds: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional complete set of registered source IDs linked to this authority page.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["documentId", "pageType", "knowledgeRole"],
+          additionalProperties: false,
+        },
+        false,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const documentId = optionalString(input.documentId);
+        return this.runTool(
+          "register_wiki_authority",
+          false,
+          { documentId, confirmed },
+          async () => {
+            this.ensureOperation("update", confirmed);
+            const context = await this.assertExactDocumentAllowed(
+              input.documentId,
+            );
+            let sourceContainerDocumentId: string | undefined;
+            if (input.sourceContainerDocumentId !== undefined) {
+              const sourceContainer =
+                await this.assertExactDocumentAllowed(
+                  input.sourceContainerDocumentId,
+                  "sourceContainerDocumentId",
+                );
+              if (
+                sourceContainer.document.box !== context.document.box
+              ) {
+                throw new PolicyViolation(
+                  "invalid_request",
+                  "sourceContainerDocumentId must be in the same notebook as the authority page",
+                );
+              }
+              if (
+                sourceContainer.document.id === context.document.id
+              ) {
+                throw new PolicyViolation(
+                  "invalid_request",
+                  "sourceContainerDocumentId must be different from the authority document",
+                );
+              }
+              sourceContainerDocumentId = sourceContainer.document.id;
+            }
+            const liveRegistry =
+              await this.liveAccessibleKnowledgeRegistry();
+            const accessibleDocumentIds = [
+              context.document.id,
+              ...(sourceContainerDocumentId
+                ? [sourceContainerDocumentId]
+                : []),
+              ...liveRegistry.sources.map((source) => source.documentId),
+              ...liveRegistry.authorities.map(
+                (authority) => authority.documentId,
+              ),
+            ];
+            try {
+              return await this.knowledgeRegistry.registerAuthority({
+                documentId: context.document.id,
+                notebookId: context.document.box,
+                title: context.document.content,
+                hPath: context.document.hpath,
+                aliases: stringArrayInput(
+                  input.aliases,
+                  "aliases",
+                  32,
+                  128,
+                ),
+                pageType: enumInput(
+                  input.pageType,
+                  "pageType",
+                  WIKI_PAGE_TYPES,
+                ) as WikiPageType,
+                knowledgeRole: enumInput(
+                  input.knowledgeRole,
+                  "knowledgeRole",
+                  KNOWLEDGE_ROLES,
+                ) as KnowledgeRole,
+                sourceContainerDocumentId,
+                sourceIds:
+                  input.sourceIds === undefined
+                    ? undefined
+                    : stringArrayInput(
+                        input.sourceIds,
+                        "sourceIds",
+                        1024,
+                        128,
+                      ).map((item) => sourceIdInput(item, "unused")),
+                accessibleDocumentIds,
+              });
+            } catch (error) {
+              return this.registryRequestError(error);
+            }
+          },
+        );
+      },
+    );
+  }
+
+  private async registerKnowledgeStatusTool(): Promise<void> {
+    await this.registerTool(
+      "knowledge_status",
+      genericToolConfig(
+        "Get Knowledge Registry Status",
+        "Returns compact Source Manifest and Authority Registry counts for the active access boundary: source states, page types, linkage coverage, and last update. Never reads note bodies or exposes the global registry revision.",
+        {
+          type: "object",
+          properties: {
+            notebookId: {
+              type: "string",
+              description: "Optional allowed notebook filter.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const notebookId = optionalString(input.notebookId);
+        return this.runTool(
+          "knowledge_status",
+          true,
+          { notebookId, confirmed },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            if (notebookId) {
+              await this.assertNotebookAllowed(notebookId);
+            }
+            return summarizeKnowledgeRegistry(
+              await this.liveAccessibleKnowledgeRegistry(),
+              await this.accessibleNotebookIds(),
+              notebookId,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  private async registerFindWikiCandidatesTool(): Promise<void> {
+    await this.registerTool(
+      "find_wiki_candidates",
+      genericToolConfig(
+        "Find Registered Wiki Candidates",
+        "Performs deterministic, low-context lookup over registered Wiki titles, aliases, types, and source links. It never searches or returns note bodies; empty results explicitly recommend search_notes as fallback.",
+        {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description:
+                "Optional title, alias, or topic query. Required unless sourceId is supplied.",
+            },
+            sourceId: {
+              type: "string",
+              description:
+                "Optional registered source ID for direct source-to-authority lookup.",
+            },
+            notebookId: {
+              type: "string",
+              description: "Optional allowed notebook filter.",
+            },
+            pageTypes: {
+              type: "array",
+              items: { type: "string", enum: [...WIKI_PAGE_TYPES] },
+            },
+            limit: {
+              type: "number",
+              description: "Maximum candidates, 1-20. Default 5.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const notebookId = optionalString(input.notebookId);
+        return this.runTool(
+          "find_wiki_candidates",
+          true,
+          { notebookId, confirmed },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            if (notebookId) {
+              await this.assertNotebookAllowed(notebookId);
+            }
+            const query = optionalString(input.query);
+            const sourceId = optionalString(input.sourceId);
+            if (!query && !sourceId) {
+              throw new PolicyViolation(
+                "invalid_request",
+                "query or sourceId is required",
+              );
+            }
+            if (query && query.length > 256) {
+              throw new PolicyViolation(
+                "invalid_request",
+                "query must not exceed 256 characters",
+              );
+            }
+            const pageTypes = stringArrayInput(
+              input.pageTypes,
+              "pageTypes",
+              WIKI_PAGE_TYPES.length,
+              64,
+            ).map(
+              (item) =>
+                enumInput(
+                  item,
+                  "pageTypes[]",
+                  WIKI_PAGE_TYPES,
+                ) as WikiPageType,
+            );
+            return findWikiCandidates(
+              await this.liveAccessibleKnowledgeRegistry(),
+              {
+                query,
+                sourceId: sourceId
+                  ? sourceIdInput(sourceId, "unused")
+                  : undefined,
+                notebookId,
+                pageTypes:
+                  input.pageTypes === undefined ? undefined : pageTypes,
+                limit: boundedInteger(input.limit, 5, 1, 20),
+                allowedNotebookIds: await this.accessibleNotebookIds(),
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  private async registerListWikiTemplatesTool(): Promise<void> {
+    await this.registerTool(
+      "list_wiki_templates",
+      genericToolConfig(
+        "List Deterministic Wiki Templates",
+        "Returns the versioned Wiki template catalog for one locale: page types, creation gates, purposes, metadata enums, and ordered required headings. It reads no note body and performs no write.",
+        {
+          type: "object",
+          properties: {
+            locale: {
+              type: "string",
+              enum: [...WIKI_TEMPLATE_LOCALES],
+              description: "Template locale. Defaults to zh-CN.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        return this.runTool(
+          "list_wiki_templates",
+          true,
+          { confirmed },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            const locale =
+              input.locale === undefined
+                ? undefined
+                : (enumInput(
+                    input.locale,
+                    "locale",
+                    WIKI_TEMPLATE_LOCALES,
+                  ) as WikiTemplateLocale);
+            return listWikiTemplates(locale);
+          },
+        );
+      },
+    );
+  }
+
+  private async registerRenderWikiTemplateTool(): Promise<void> {
+    await this.registerTool(
+      "render_wiki_template",
+      genericToolConfig(
+        "Render a Wiki Template Preview",
+        "Renders a deterministic Markdown draft with metadata and ordered headings. The result is previewOnly/writeExecuted=false and never creates or updates a SiYuan note.",
+        {
+          type: "object",
+          properties: {
+            pageType: {
+              type: "string",
+              enum: [...WIKI_PAGE_TYPES],
+            },
+            title: { type: "string", maxLength: 256 },
+            locale: {
+              type: "string",
+              enum: [...WIKI_TEMPLATE_LOCALES],
+            },
+            knowledgeRole: {
+              type: "string",
+              enum: [...KNOWLEDGE_ROLES],
+            },
+            aliases: {
+              type: "array",
+              maxItems: 32,
+              items: { type: "string", maxLength: 256 },
+            },
+            canonicalDocumentId: {
+              type: "string",
+              description:
+                "Optional exact SiYuan ID of the canonical page when it already exists.",
+            },
+            authorityDocumentId: {
+              type: "string",
+              description:
+                "Optional exact authority-page ID, especially for a source summary.",
+            },
+            sourceContainerDocumentId: {
+              type: "string",
+              description: "Optional exact A-raw/source-container document ID.",
+            },
+            sourceIds: {
+              type: "array",
+              maxItems: 1024,
+              items: { type: "string", maxLength: 128 },
+            },
+            status: { type: "string", enum: [...WIKI_STATUSES] },
+            evidenceStatus: {
+              type: "string",
+              enum: [...WIKI_EVIDENCE_STATUSES],
+            },
+            reviewedAt: {
+              type: "string",
+              maxLength: 64,
+              description: "Optional ISO date or timestamp.",
+            },
+            includeMetadata: {
+              type: "boolean",
+              description: "Defaults to true.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["pageType", "title", "knowledgeRole"],
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        return this.runTool(
+          "render_wiki_template",
+          true,
+          { confirmed, preview: true },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            const exactOptionalId = (value: unknown, label: string) => {
+              const id = optionalString(value);
+              return id ? assertSiyuanId(id, label) : undefined;
+            };
+            return renderWikiTemplate({
+              pageType: enumInput(
+                input.pageType,
+                "pageType",
+                WIKI_PAGE_TYPES,
+              ) as WikiPageType,
+              title: stringInput(input.title, "title", {
+                maxLength: 256,
+              }),
+              locale:
+                input.locale === undefined
+                  ? undefined
+                  : (enumInput(
+                      input.locale,
+                      "locale",
+                      WIKI_TEMPLATE_LOCALES,
+                    ) as WikiTemplateLocale),
+              knowledgeRole: enumInput(
+                input.knowledgeRole,
+                "knowledgeRole",
+                KNOWLEDGE_ROLES,
+              ) as KnowledgeRole,
+              aliases: stringArrayInput(input.aliases, "aliases", 32, 256),
+              canonicalDocumentId: exactOptionalId(
+                input.canonicalDocumentId,
+                "canonicalDocumentId",
+              ),
+              authorityDocumentId: exactOptionalId(
+                input.authorityDocumentId,
+                "authorityDocumentId",
+              ),
+              sourceContainerDocumentId: exactOptionalId(
+                input.sourceContainerDocumentId,
+                "sourceContainerDocumentId",
+              ),
+              sourceIds: stringArrayInput(
+                input.sourceIds,
+                "sourceIds",
+                1024,
+                128,
+              ).map((item) => sourceIdInput(item, "unused")),
+              status:
+                input.status === undefined
+                  ? undefined
+                  : (enumInput(
+                      input.status,
+                      "status",
+                      WIKI_STATUSES,
+                    ) as WikiStatus),
+              evidenceStatus:
+                input.evidenceStatus === undefined
+                  ? undefined
+                  : (enumInput(
+                      input.evidenceStatus,
+                      "evidenceStatus",
+                      WIKI_EVIDENCE_STATUSES,
+                    ) as WikiEvidenceStatus),
+              reviewedAt: optionalIsoDate(input.reviewedAt),
+              includeMetadata: input.includeMetadata !== false,
+            });
+          },
+        );
+      },
+    );
+  }
+
+  private async registerValidateWikiTemplateTool(): Promise<void> {
+    await this.registerTool(
+      "validate_wiki_template",
+      genericToolConfig(
+        "Validate a Wiki Template Draft",
+        "Checks a Markdown draft against one deterministic Wiki template: H1, required H2 order/uniqueness, optional title, and metadata enums. It returns issues only and never writes a note.",
+        {
+          type: "object",
+          properties: {
+            pageType: { type: "string", enum: [...WIKI_PAGE_TYPES] },
+            markdown: {
+              type: "string",
+              maxLength: MAX_MARKDOWN_LENGTH,
+            },
+            locale: {
+              type: "string",
+              enum: [...WIKI_TEMPLATE_LOCALES],
+            },
+            expectedTitle: { type: "string", maxLength: 256 },
+            expectedKnowledgeRole: {
+              type: "string",
+              enum: [...KNOWLEDGE_ROLES],
+            },
+            requireMetadata: {
+              type: "boolean",
+              description: "Defaults to true.",
+            },
+            allowAdditionalHeadings: {
+              type: "boolean",
+              description:
+                "Defaults to false; extra H2 headings are warnings, not errors.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["pageType", "markdown"],
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const markdown = stringInput(input.markdown, "markdown", {
+          maxLength: MAX_MARKDOWN_LENGTH,
+        });
+        return this.runTool(
+          "validate_wiki_template",
+          true,
+          { confirmed, contentLength: markdown.length, preview: true },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            return validateWikiTemplate({
+              pageType: enumInput(
+                input.pageType,
+                "pageType",
+                WIKI_PAGE_TYPES,
+              ) as WikiPageType,
+              markdown,
+              locale:
+                input.locale === undefined
+                  ? undefined
+                  : (enumInput(
+                      input.locale,
+                      "locale",
+                      WIKI_TEMPLATE_LOCALES,
+                    ) as WikiTemplateLocale),
+              expectedTitle:
+                input.expectedTitle === undefined
+                  ? undefined
+                  : stringInput(input.expectedTitle, "expectedTitle", {
+                      maxLength: 256,
+                    }),
+              expectedKnowledgeRole:
+                input.expectedKnowledgeRole === undefined
+                  ? undefined
+                  : (enumInput(
+                      input.expectedKnowledgeRole,
+                      "expectedKnowledgeRole",
+                      KNOWLEDGE_ROLES,
+                    ) as KnowledgeRole),
+              requireMetadata: input.requireMetadata !== false,
+              allowAdditionalHeadings:
+                input.allowAdditionalHeadings === true,
+            });
+          },
+        );
+      },
+    );
+  }
+
+  private async registerPlanSourceIngestTool(): Promise<void> {
+    await this.registerTool(
+      "plan_source_ingest",
+      genericToolConfig(
+        "Plan One Raw Source Ingest",
+        "Builds a deterministic, read-only state and ordered workflow for one exact Raw document using the Source Manifest, Authority Registry, bounded discovery evidence, and Wiki templates. It never reads source/authority bodies, never calls a write API, and never authorizes the mutations listed in the plan.",
+        {
+          type: "object",
+          properties: {
+            sourceDocumentId: {
+              type: "string",
+              description: "Exact allowed immutable Raw document ID.",
+            },
+            sourceId: {
+              type: "string",
+              description:
+                "Stable source identifier. Defaults to siyuan:<sourceDocumentId>.",
+            },
+            sha256: {
+              type: "string",
+              description: "Optional grounded 64-character SHA-256 digest.",
+            },
+            canonicalUrl: {
+              type: "string",
+              description:
+                "Optional grounded canonical HTTP(S) URL without credentials.",
+            },
+            query: {
+              type: "string",
+              maxLength: 256,
+              description:
+                "Focused existing-Wiki title or alias query. Defaults to proposedWikiTitle or the Raw title.",
+            },
+            targetNotebookId: {
+              type: "string",
+              description:
+                "Allowed notebook in which to find or eventually create the Wiki authority.",
+            },
+            selectedAuthorityDocumentId: {
+              type: "string",
+              description:
+                "Optional exact allowed existing Wiki page selected after semantic review; it may be unregistered.",
+            },
+            proposedWikiTitle: {
+              type: "string",
+              maxLength: 256,
+              description:
+                "Required only for create_new after the creation gate passes.",
+            },
+            pageType: { type: "string", enum: [...WIKI_PAGE_TYPES] },
+            knowledgeRole: {
+              type: "string",
+              enum: [...KNOWLEDGE_ROLES],
+            },
+            locale: {
+              type: "string",
+              enum: [...WIKI_TEMPLATE_LOCALES],
+            },
+            targetParentPath: {
+              type: "string",
+              maxLength: 2048,
+              description:
+                "Optional proposed human parent path for a future create; not resolved or written by this tool.",
+            },
+            discoveryState: {
+              type: "string",
+              enum: [...INGEST_DISCOVERY_STATES],
+              description:
+                "registry_only until focused search and bounded tree fallback have found no authority; use bounded_search_no_match only after that evidence exists.",
+            },
+            creationGateDecision: {
+              type: "string",
+              enum: [...CREATION_GATE_DECISIONS],
+              description:
+                "Semantic classification decision owned by the caller. The plugin never infers that the gate passed.",
+            },
+            candidateLimit: {
+              type: "number",
+              description: "Maximum registered candidates, 1-20. Default 5.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["sourceDocumentId", "targetNotebookId"],
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const sourceDocumentId = optionalString(input.sourceDocumentId);
+        const targetNotebookId = optionalString(input.targetNotebookId);
+        return this.runTool(
+          "plan_source_ingest",
+          true,
+          {
+            documentId: sourceDocumentId,
+            targetNotebookId,
+            confirmed,
+            preview: true,
+          },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            const sourceContext = await this.assertExactDocumentAllowed(
+              input.sourceDocumentId,
+              "sourceDocumentId",
+            );
+            const targetNotebook = await this.assertNotebookAllowed(
+              input.targetNotebookId,
+            );
+            let selectedAuthority;
+            if (input.selectedAuthorityDocumentId !== undefined) {
+              const context = await this.assertExactDocumentAllowed(
+                input.selectedAuthorityDocumentId,
+                "selectedAuthorityDocumentId",
+              );
+              selectedAuthority = {
+                documentId: context.document.id,
+                notebookId: context.document.box,
+                title: context.document.content,
+                hPath: context.document.hpath,
+              };
+            }
+            const registry = await this.liveAccessibleKnowledgeRegistry();
+            const registeredSource = registry.sources.find(
+              (source) => source.documentId === sourceContext.document.id,
+            );
+            const registeredAuthority = selectedAuthority
+              ? registry.authorities.find(
+                  (authority) =>
+                    authority.documentId === selectedAuthority.documentId,
+                )
+              : undefined;
+            try {
+              return planSourceIngest({
+                registry,
+                allowedNotebookIds: await this.accessibleNotebookIds(),
+                source: {
+                  documentId: sourceContext.document.id,
+                  notebookId: sourceContext.document.box,
+                  title: sourceContext.document.content,
+                  hPath: sourceContext.document.hpath,
+                },
+                sourceId: sourceIdInput(
+                  input.sourceId ?? registeredSource?.sourceId,
+                  sourceContext.document.id,
+                ),
+                sha256: optionalSha256(input.sha256),
+                canonicalUrl: optionalCanonicalUrl(input.canonicalUrl),
+                query:
+                  input.query === undefined
+                    ? undefined
+                    : stringInput(input.query, "query", {
+                        maxLength: 256,
+                      }).trim(),
+                targetNotebookId: targetNotebook.id,
+                selectedAuthority: selectedAuthority
+                  ? {
+                      ...selectedAuthority,
+                      registeredAuthority,
+                    }
+                  : undefined,
+                proposedWikiTitle:
+                  input.proposedWikiTitle === undefined
+                    ? undefined
+                    : documentTitleInput(input.proposedWikiTitle),
+                pageType:
+                  input.pageType === undefined
+                    ? undefined
+                    : (enumInput(
+                        input.pageType,
+                        "pageType",
+                        WIKI_PAGE_TYPES,
+                      ) as WikiPageType),
+                knowledgeRole:
+                  input.knowledgeRole === undefined
+                    ? undefined
+                    : (enumInput(
+                        input.knowledgeRole,
+                        "knowledgeRole",
+                        KNOWLEDGE_ROLES,
+                      ) as KnowledgeRole),
+                locale:
+                  input.locale === undefined
+                    ? undefined
+                    : (enumInput(
+                        input.locale,
+                        "locale",
+                        WIKI_TEMPLATE_LOCALES,
+                      ) as WikiTemplateLocale),
+                targetParentPath:
+                  input.targetParentPath === undefined
+                    ? undefined
+                    : stringInput(
+                        input.targetParentPath,
+                        "targetParentPath",
+                        { allowEmpty: true, maxLength: 2048 },
+                      ).trim(),
+                discoveryState:
+                  input.discoveryState === undefined
+                    ? undefined
+                    : (enumInput(
+                        input.discoveryState,
+                        "discoveryState",
+                        INGEST_DISCOVERY_STATES,
+                      ) as IngestDiscoveryState),
+                creationGateDecision:
+                  input.creationGateDecision === undefined
+                    ? undefined
+                    : (enumInput(
+                        input.creationGateDecision,
+                        "creationGateDecision",
+                        CREATION_GATE_DECISIONS,
+                      ) as CreationGateDecision),
+                candidateLimit: boundedInteger(
+                  input.candidateLimit,
+                  5,
+                  1,
+                  20,
+                ),
+              });
+            } catch (error) {
+              return this.ingestPlanRequestError(error);
+            }
           },
         );
       },
