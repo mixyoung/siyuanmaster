@@ -385,10 +385,12 @@ def polish_chinese_technical(markdown: str) -> str:
         ) + "\n"
 
 
-    pieces = re.split(r"(```.*?```)", markdown, flags=re.DOTALL)
+    pieces = re.split(r"(```.*?```|`[^`\n]+`)", markdown, flags=re.DOTALL)
     for index, piece in enumerate(pieces):
-        if not piece.startswith("```"):
+        if not piece.startswith(("```", "`")):
             pieces[index] = INLINE_LITERAL.sub(lambda match: f"`{match.group(0)}`", piece)
+            pieces[index] = re.sub(r"([\u4e00-\u9fff])([A-Za-z0-9])", r"\1 \2", pieces[index])
+            pieces[index] = re.sub(r"([A-Za-z0-9])([\u4e00-\u9fff])", r"\1 \2", pieces[index])
     polished = "".join(pieces)
     polished = polished.replace("\u200b", "")
     polished = re.sub(
