@@ -124,6 +124,7 @@ When converting a local PDF into a Markdown note without summarization:
 - for Chinese technical prose, preserve Chinese full-width punctuation; use one space between Chinese and English, Arabic numerals, or inline code, but never before Chinese punctuation. Keep official product spelling; use inline code only for exact commands, identifiers, paths, options, and file names; and
 - treat rich-feature counts as a screen, not visual acceptance. Before writing, render and compare at least the opening page, one code/table page, one dense list or multi-column page, and the first and final reference pages against rendered Markdown; and
 - repair from page evidence: font weight determines bold labels such as `适用场景：`, vertical gaps determine paragraph/list boundaries, table rectangles determine table boundaries, and annotation targets determine links. Do not flatten a visually separate list or run-on reference merely because text extraction joined it; and
+- audit bold by mapping every normalized bold PDF span to either a Markdown strong span or a heading, page by page; a total bold-count match alone is insufficient. Resolve and report every unmatched span before writing; and
 - make each source citation one list item. Apply a descriptive clickable title only after the target page title has been verified; and
 - before writing, check for visible comments, truncation text, unfenced commands, and flattened tables; after writing, re-read the first and final source page plus every code/table region.
 
