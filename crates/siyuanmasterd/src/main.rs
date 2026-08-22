@@ -884,7 +884,7 @@ mod tests {
         assert_eq!(parsed["product"]["id"], "siyuanmaster");
         assert_eq!(parsed["product"]["technicalId"], "siyuanmaster");
         assert_eq!(parsed["namespaces"]["plugin"], "plugin__siyuanmaster__");
-        assert_eq!(parsed["pluginTools"].as_array().unwrap().len(), 27);
+        assert_eq!(parsed["pluginTools"].as_array().unwrap().len(), 28);
     }
 
     #[test]

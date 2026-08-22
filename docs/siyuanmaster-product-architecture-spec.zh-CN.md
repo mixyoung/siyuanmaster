@@ -4,7 +4,7 @@
 >
 > - 规格版本：1.4
 > - 产品基线：`siyuan-agent-access` v0.3.0（git 基线 94af5b2）
-> - 当前开发版本：0.6.0（知识复利 M1 注册表、模板与单来源 Ingest 预演子切片；实机验收仍待完成）
+> - 当前开发版本：0.6.1（知识复利 M1 + 思源 3.8.1 Agent capability 兼容层；实机验收进行中）
 > - 编写日期：2026-08-12
 > - 一致性声明：本文档描述**本仓库当前实际实现**。所有“已实现”条目均可在仓库中找到对应代码与测试；已在思源实机验证的路径单独标注证据；其余“未接入”或“未在思源实机验证”的行为均如实标注，不冒充已实现。**不宣称**与外部参考项目（Bridge / Sisyphus）功能全量对等。
 > - 专项路线：知识复利产品线、SiYuan + LLM 与成熟 Obsidian/VS Code + LLM 实现的差距及分阶段验收标准，见 [《SiYuanMaster 知识复利产品路线与能力差距基线》](knowledge-compounding-product-roadmap.zh-CN.md)。专项路线只描述计划，不改变本文的“当前已实现”口径。
@@ -21,7 +21,7 @@
 
 | 内部名称 | 职责 |
 |---|---|
-| **Access Boundary（访问边界）** | 笔记本允许/禁止名单、操作级允许/需确认/禁止、文档树权限继承（当前=笔记本决策下沉）、标签策略、审计（无正文）、插件 MCP 工具注册 |
+| **Access Boundary（访问边界）** | 笔记本允许/禁止名单、操作级允许/需确认/禁止、文档树权限继承（当前=笔记本决策下沉）、标签策略、审计（无正文）、插件 Agent capability 注册与 `/mcp` 暴露 |
 | **Safe Write Transaction（安全写事务，`SafeWriteTxn`）** | 写前快照 → 确认 → 执行前状态复核 → 只执行一次 → 回读验证 → 无正文审计；快照失败停止；`unknown` 不自动重试 |
 | **Capability Catalog（能力目录）** | `catalog/capabilities.json` 单一事实源；Rust 内嵌解析；TS 生成 + 新鲜度门禁 |
 | **Wiki Template Catalog（Wiki 模板目录）** | `catalog/wiki-templates.json` 单一语义事实源；六类中英模板、版本、创建门槛、预览渲染和只读结构校验 |
@@ -79,7 +79,7 @@
 
 ### 1.4 产品形态
 
-1. **思源原生插件**（TypeScript）：`plugin.json` **技术 name** = `siyuanmaster`；展示名 = SiYuanMaster / 思源大师；内核注册受控 MCP 工具并执行 Access Boundary + Safe Write Transaction。
+1. **思源原生插件**（TypeScript）：`plugin.json` **技术 name** = `siyuanmaster`；展示名 = SiYuanMaster / 思源大师；内核通过 `siyuan.agent.registerCapability` 注册受控能力并执行 Access Boundary + Safe Write Transaction，能力由思源暴露到 `/mcp`。
 2. **Rust 工作区**：`core` / `siyuanmasterd` / `siyuanmaster`。
 3. **单一能力目录**：`catalog/capabilities.json`。
 
@@ -97,25 +97,25 @@
 | 展示名 default | `SiYuanMaster` | 用户可见 |
 | 展示名 zh-CN | `思源大师` | 用户可见 |
 | **技术插件 ID**（`plugin.json` name） | **`siyuanmaster`** | **0.5.0 已切换**；旧安装路径与旧 MCP 全名失效 |
-| MCP 命名空间 | **仅** `plugin__siyuanmaster__*` | 由思源内核从技术 name 推导；单插件不能注册双原生命名空间 |
+| Agent capability 模型名前缀 | **仅** `plugin__siyuanmaster__*` | 3.8.1 由技术 ID + 裸能力名推导，并追加稳定 12 位哈希；单插件不能注册双原生命名空间 |
 | 插件存储目录 | `data/storage/petal/siyuanmaster/` | 首次加载自动复制旧 petal（新值优先、失败关闭；旧目录保留不删） |
 | Dock 类型键 | `siyuanmaster-dock` | 随技术 ID 切换（breaking） |
 | “仅首次”标记属性 | `custom-agent-access-tagged` | 保持不变 |
-| 版本 | `0.6.0` | package / plugin / catalog / Rust workspace 统一 |
+| 版本 | `0.6.1` | package / plugin / catalog / Rust workspace 统一 |
 
 ### 2.2 0.5.0 技术 ID 切换（breaking）
 
-思源内核将 MCP 工具命名为 `plugin__<sanitize(plugin.json name)>__<tool>`（已在 v3.8.0-alpha.2 的 `plugin/api_mcp.go` 行为中核对）。0.5.0 已将 `plugin.json` 的 `name` 改为 `siyuanmaster`：
+思源 3.8.1 将内核插件能力命名为 `plugin__<sanitize(plugin.json name)>__<capability>__<稳定哈希>`，并通过 `siyuan.agent.registerCapability` 注册；旧 `siyuan.mcp.registerTool` 接口已移除。0.5.0 已将 `plugin.json` 的 `name` 改为 `siyuanmaster`，0.6.1 完成 Agent capability 迁移：
 
 1. 安装目录变为 `data/plugins/siyuanmaster`，petal 变为 `data/storage/petal/siyuanmaster/`；
-2. 工具全名变为 `plugin__siyuanmaster__*`；旧 `plugin__siyuan_agent_access__*` **全部失效**，外部 Agent/Skill 配置必须更新；
+2. 工具模型名前缀为 `plugin__siyuanmaster__*`，完整名称带稳定哈希后缀；旧 `plugin__siyuan_agent_access__*` **全部失效**，外部 Agent/Skill 必须使用 `tools/list` 发现的精确名称；
 3. **同一插件无法同时注册两个原生命名空间**，故不做双命名空间兼容。
 
 **旧数据迁移（已实现）：** `src/migration.ts` 在前端与 kernel 启动时运行幂等迁移：新 policy 始终优先；仅当新侧缺失时只读读取旧 petal 并复制到新 scoped storage；损坏/缺失则失败关闭到空 allowlist；新 audit 为空时才做有界 metadata-only 审计复制；写入 migration marker；**永不删除/改写旧目录**。外部 Agent 命名空间仍须手工更新。
 
 ### 2.3 工具集合
 
-27 个裸工具名 = 原 16 + `resolve_document` + `read_note_segments` + `edit_block` + `register_knowledge_source` + `register_wiki_authority` + `knowledge_status` + `find_wiki_candidates` + `list_wiki_templates` + `render_wiki_template` + `validate_wiki_template` + `plan_source_ingest`。全部只生成当前 `plugin__siyuanmaster__` 命名空间下的全名。
+27 个裸工具名 = 原 16 + `resolve_document` + `read_note_segments` + `edit_block` + `register_knowledge_source` + `register_wiki_authority` + `knowledge_status` + `find_wiki_candidates` + `list_wiki_templates` + `render_wiki_template` + `validate_wiki_template` + `plan_source_ingest`。全部只生成当前 `plugin__siyuanmaster__` 前缀下的 Agent capability 模型名，并由思源 3.8.1 追加稳定哈希。
 
 ---
 
@@ -279,18 +279,17 @@ catalog/capabilities.json
 | `plan_source_ingest` | 只读预演；读取精确 Raw 与注册表元数据，输出重复/复核/已摄取/更新/候选/回退/创建门槛/新建/保留 Raw 状态、有序操作计划及结构化影响摘要；不读正文、不执行写入，`readyForWorkflow` 也不代表写授权。 |
 | `update_note` | 同上：快照/确认/复核/回读；**无**跨调用 preview token；**无**用户可见全量 diff |
 
-### 10.1 思源 3.8.0-alpha.2 实机证据（已确认）
+### 10.1 思源 3.8.1 实机证据（已确认）
 
-在**真实本地思源 3.8.0-alpha.2** 实例上已确认：
+当前 0.6.1 在**真实本地思源 3.8.1** 实例上已确认：
 
 1. MCP `initialize` 协商协议 **`2025-03-26`**
-2. 0.5.2 历史实机基线：`tools/list` **总计 51** 个工具，其中 **19** 个插件工具、**0** 个旧命名空间；0.6.0 必须重新实机验证 **27** 个 `plugin__siyuanmaster__*`，不得复用历史数字
-3. 只读探测：`get_policy`、`list_accessible_notebooks`
-4. **专用可弃笔记本** 完整写烟测通过（插件工具 only；写路径从不重试）：
-   `create_note` → 可见性 `read_note` → `resolve_document` → `read_note_segments(includeStateHash=true)` → `edit_block validateOnly=true`（无写） → **一次** `edit_block` 确认提交并回读验证 → 编辑后 `read_note` → **一次** `update_note` → 最终 `read_note` → `delete_note` 清理
-5. 审计元数据可区分：`validateOnly` 预检 `preview=true` vs 真实 `edit_block` `preview=false`
+2. `tools/list` **总计 58** 项，其中 **27** 项 `plugin__siyuanmaster__*` Agent capability、**0** 项旧命名空间、31 项思源其他工具
+3. 带稳定哈希的 `get_policy`、`list_accessible_notebooks` 只读探测成功
+4. kernel RPC 返回 `ready=true`、`toolCount=27`；安装目录 13 个文件与 `dist/` 逐项 SHA-256 一致
+5. 安全安装流程保留 0.6.0 备份；最新日志显示 27 项 Agent capability 已加载且无新的 `onload` 错误
 
-**仍未宣称实机验证**（见 §13）：非空块引用场景、超长文档性能/排序、GUI 视觉行为、网关出站链路；**不**宣称 Bridge / Sisyphus 功能全量对等。
+本次 3.8.1 兼容性验收未执行破坏性写烟测。此前 3.8.0-alpha.2 可弃笔记本上的完整 create/read/resolve/segments/edit/update/delete 流程只作为历史证据。**仍未宣称实机验证**（见 §13）：3.8.1 写入全流程、非空块引用场景、超长文档性能/排序、GUI 视觉行为、网关出站链路；**不**宣称 Bridge / Sisyphus 功能全量对等。
 
 ---
 
@@ -331,9 +330,9 @@ Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`me
 
 ## 13. 思源实机验证状态（强制如实）
 
-### 13.1 已在真实思源 3.8.0-alpha.2 本地实例确认
+### 13.1 已在真实思源 3.8.1 本地实例确认
 
-见 §10.1。0.5.2 历史摘要：协议协商 `2025-03-26`；`tools/list` 51 = 19 插件 + 0 遗留；既有专用笔记本写烟测全路径通过。0.6.0 的 27 工具、模板/Ingest 预演调用、注册表持久化和权限拒绝场景尚需安装后重新取证。
+见 §10.1。0.6.1 已完成安全安装/备份/重载；协议协商 `2025-03-26`；`tools/list` 58 = 27 插件 Agent capability + 0 遗留 + 31 其他；两个必需只读能力与 RPC 状态通过。3.8.1 破坏性写入、模板/Ingest 预演调用、注册表持久化和权限拒绝场景仍需单独授权取证。
 
 ### 13.2 仍有代码/单测但未（或仅部分）实机验证
 
@@ -366,7 +365,7 @@ Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`me
 
 ## 15. 版本与交付物
 
-- 版本：0.6.0
+- 版本：0.6.1
 - 规格版本：1.4
 - 插件包：`package.zip`（技术目录名 `siyuanmaster`）
 - 规格：本文档

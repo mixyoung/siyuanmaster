@@ -1,8 +1,8 @@
 # SiYuanMaster 知识复利产品路线与能力差距基线
 
-> 状态：持续实现中；M1 确定性注册表、模板与单来源 Ingest 预演已进入 0.6.0 源码，尚未实机安装验收
+> 状态：持续实现中；M1 确定性注册表、模板与单来源 Ingest 预演已进入 0.6.1；思源 3.8.1 已完成27项能力发现与必需只读冒烟，M1 专项写入/持久化场景仍待验收
 > 基线日期：2026-08-12
-> 当前开发版本：SiYuanMaster 0.6.0；已实机验证基线仍为 0.5.2
+> 当前开发版本：SiYuanMaster 0.6.1；实机发现/只读基线为思源 3.8.1
 > 适用范围：思源笔记 + 外部 LLM Agent + SiYuanMaster 受控工具
 
 ## 1. 结论
@@ -129,12 +129,12 @@ Source Manifest ──→ Authority Registry
 6. 单来源 Ingest plan：候选目标、拟新增/修改页面、引用和影响；
 7. Query 结果 Promote preview。
 
-当前完成度（0.6.0 源码）：
+当前完成度（0.6.1 源码）：
 
 - 已完成：Source Manifest、Authority Registry、六类版本化 Wiki 模板、只读 preview renderer/validator、单来源 Ingest 状态机，以及 `register_knowledge_source`、`register_wiki_authority`、`knowledge_status`、`find_wiki_candidates`、`list_wiki_templates`、`render_wiki_template`、`validate_wiki_template`、`plan_source_ingest`；
 - 已覆盖：串行化并发写、来源 ID/文档/哈希/URL 去重、双向引用、竞争权威页报告、访问范围过滤、确定性排序和空结果回退；
 - 尚未完成：`scanRaw`、可恢复的多步 Ingest 执行会话、Promote preview；
-- 尚未完成门禁：把 0.6.0 安装到真实思源后做 27 工具发现、模板与 Ingest 预演只读调用、登记/重复/权限拒绝/重载持久化烟测。
+- 已完成门禁：0.6.1 安装到真实思源 3.8.1，27 项 Agent capability 发现、`get_policy` / `list_accessible_notebooks` 只读调用与重载通过；尚未完成模板/Ingest 预演调用、登记/重复/权限拒绝及重载持久化专项烟测。
 
 验收：
 

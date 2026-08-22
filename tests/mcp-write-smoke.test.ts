@@ -34,11 +34,15 @@ import {
   STATE_HASH_PATTERN,
   VISIBILITY_TIMEOUT_MESSAGE,
 } from "../scripts/mcp-write-smoke.mjs";
+import { buildAgentCapabilityToolName } from "../scripts/mcp-smoke.mjs";
 
 const PLUGIN_NS = "plugin__siyuanmaster__";
+const TECHNICAL_ID = "siyuanmaster";
 const PROTOCOL_VERSION = "2025-03-26";
+const FQ = (name: string) => buildAgentCapabilityToolName(TECHNICAL_ID, name);
 
 const CATALOG_27 = {
+  product: { technicalId: TECHNICAL_ID },
   namespaces: { plugin: PLUGIN_NS },
   pluginTools: [
     "get_policy",
@@ -76,7 +80,10 @@ const CATALOG_27 = {
   })),
 };
 
-const FQ_27 = CATALOG_27.pluginTools.map((t) => `${PLUGIN_NS}${t.name}`);
+const FQ_27 = CATALOG_27.pluginTools.map((t) => FQ(t.name));
+const BARE_BY_FQ = new Map(
+  CATALOG_27.pluginTools.map((t) => [FQ(t.name), t.name]),
+);
 
 // Strict SiYuan ids: /^\d{14}-[a-z0-9]{7}$/ (7-char suffix)
 const NOTEBOOK_ID = "20240101120000-nbok001";
@@ -451,9 +458,7 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
     }
     if (body.method === "tools/call") {
       const tool = String(body.params?.name ?? "");
-      const bare = tool.startsWith(PLUGIN_NS)
-        ? tool.slice(PLUGIN_NS.length)
-        : tool;
+      const bare = BARE_BY_FQ.get(tool) ?? tool;
       capture?.toolNames.push(tool);
       capture?.toolArgs.push(body.params?.arguments ?? {});
 
@@ -2362,10 +2367,10 @@ describe("mcp-write-smoke orchestration", () => {
     ).rejects.toThrow(/operations\.delete is deny/);
 
     expect(capture.toolNames).toEqual([
-      `${PLUGIN_NS}get_policy`,
-      `${PLUGIN_NS}list_accessible_notebooks`,
+      FQ("get_policy"),
+      FQ("list_accessible_notebooks"),
     ]);
-    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}create_note`);
+    expect(capture.toolNames).not.toContain(FQ("create_note"));
     expect(capture.methods.filter((m) => m === "tools/call")).toHaveLength(2);
   });
 
@@ -2385,7 +2390,7 @@ describe("mcp-write-smoke orchestration", () => {
     await expect(runWrite(fetchImpl as typeof fetch)).rejects.toThrow(
       /not accessible/,
     );
-    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}create_note`);
+    expect(capture.toolNames).not.toContain(FQ("create_note"));
   });
 
   it("direct get_policy + enveloped list/lifecycle happy path passes", async () => {
@@ -2401,9 +2406,9 @@ describe("mcp-write-smoke orchestration", () => {
       makeWriteFetch({ capture, policyShape: "direct" }) as typeof fetch,
     );
     expect(result.ok).toBe(true);
-    expect(capture.toolNames[0]).toBe(`${PLUGIN_NS}get_policy`);
-    expect(capture.toolNames[1]).toBe(`${PLUGIN_NS}list_accessible_notebooks`);
-    expect(capture.toolNames).toContain(`${PLUGIN_NS}create_note`);
+    expect(capture.toolNames[0]).toBe(FQ("get_policy"));
+    expect(capture.toolNames[1]).toBe(FQ("list_accessible_notebooks"));
+    expect(capture.toolNames).toContain(FQ("create_note"));
   });
 
   it("enveloped get_policy is rejected as malformed policy before any write", async () => {
@@ -2421,10 +2426,10 @@ describe("mcp-write-smoke orchestration", () => {
       ),
     ).rejects.toThrow(/operations missing or malformed|operations\./);
     expect(capture.toolNames).toEqual([
-      `${PLUGIN_NS}get_policy`,
-      `${PLUGIN_NS}list_accessible_notebooks`,
+      FQ("get_policy"),
+      FQ("list_accessible_notebooks"),
     ]);
-    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}create_note`);
+    expect(capture.toolNames).not.toContain(FQ("create_note"));
   });
 
   it("missing/array/null direct get_policy structuredContent rejects before write", async () => {
@@ -2440,8 +2445,8 @@ describe("mcp-write-smoke orchestration", () => {
       await expect(
         runWrite(makeWriteFetch({ capture, policyShape }) as typeof fetch),
       ).rejects.toThrow(/missing or malformed structuredContent|isError/);
-      expect(capture.toolNames).toEqual([`${PLUGIN_NS}get_policy`]);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}create_note`);
+      expect(capture.toolNames).toEqual([FQ("get_policy")]);
+      expect(capture.toolNames).not.toContain(FQ("create_note"));
     }
   });
 
@@ -2459,8 +2464,8 @@ describe("mcp-write-smoke orchestration", () => {
         makeWriteFetch({ capture, policyShape: "text-only" }) as typeof fetch,
       ),
     ).rejects.toThrow(/missing or malformed structuredContent/);
-    expect(capture.toolNames).toEqual([`${PLUGIN_NS}get_policy`]);
-    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}create_note`);
+    expect(capture.toolNames).toEqual([FQ("get_policy")]);
+    expect(capture.toolNames).not.toContain(FQ("create_note"));
   });
 
   it("fails on malformed/missing list envelopes and lifecycle envelopes without content.text fallback", async () => {
@@ -2510,45 +2515,45 @@ describe("mcp-write-smoke orchestration", () => {
     // Order: preflight → create → visibility → resolve → segments →
     // validateOnly → edit → post-edit read → update → final read → delete
     expect(capture.toolNames).toEqual([
-      `${PLUGIN_NS}get_policy`,
-      `${PLUGIN_NS}list_accessible_notebooks`,
-      `${PLUGIN_NS}create_note`,
-      `${PLUGIN_NS}read_note`,
-      `${PLUGIN_NS}resolve_document`,
-      `${PLUGIN_NS}read_note_segments`,
-      `${PLUGIN_NS}edit_block`,
-      `${PLUGIN_NS}edit_block`,
-      `${PLUGIN_NS}read_note`,
-      `${PLUGIN_NS}update_note`,
-      `${PLUGIN_NS}read_note`,
-      `${PLUGIN_NS}delete_note`,
+      FQ("get_policy"),
+      FQ("list_accessible_notebooks"),
+      FQ("create_note"),
+      FQ("read_note"),
+      FQ("resolve_document"),
+      FQ("read_note_segments"),
+      FQ("edit_block"),
+      FQ("edit_block"),
+      FQ("read_note"),
+      FQ("update_note"),
+      FQ("read_note"),
+      FQ("delete_note"),
     ]);
 
     // preflight before write
-    const createIdx = capture.toolNames.indexOf(`${PLUGIN_NS}create_note`);
-    expect(capture.toolNames.indexOf(`${PLUGIN_NS}get_policy`)).toBeLessThan(
+    const createIdx = capture.toolNames.indexOf(FQ("create_note"));
+    expect(capture.toolNames.indexOf(FQ("get_policy"))).toBeLessThan(
       createIdx,
     );
     expect(
-      capture.toolNames.indexOf(`${PLUGIN_NS}list_accessible_notebooks`),
+      capture.toolNames.indexOf(FQ("list_accessible_notebooks")),
     ).toBeLessThan(createIdx);
 
-    const visibilityIdx = capture.toolNames.indexOf(`${PLUGIN_NS}read_note`);
-    const resolveIdx = capture.toolNames.indexOf(`${PLUGIN_NS}resolve_document`);
+    const visibilityIdx = capture.toolNames.indexOf(FQ("read_note"));
+    const resolveIdx = capture.toolNames.indexOf(FQ("resolve_document"));
     const segmentsIdx = capture.toolNames.indexOf(
-      `${PLUGIN_NS}read_note_segments`,
+      FQ("read_note_segments"),
     );
     const editIdxs = capture.toolNames
       .map((n, i) => ({ n, i }))
-      .filter(({ n }) => n === `${PLUGIN_NS}edit_block`)
+      .filter(({ n }) => n === FQ("edit_block"))
       .map(({ i }) => i);
     const postEditIdx = capture.toolNames.indexOf(
-      `${PLUGIN_NS}read_note`,
+      FQ("read_note"),
       editIdxs[1]! + 1,
     );
-    const updateIdx = capture.toolNames.indexOf(`${PLUGIN_NS}update_note`);
+    const updateIdx = capture.toolNames.indexOf(FQ("update_note"));
     const finalReadIdx = capture.toolNames.indexOf(
-      `${PLUGIN_NS}read_note`,
+      FQ("read_note"),
       updateIdx + 1,
     );
     expect(visibilityIdx).toBeGreaterThan(createIdx);
@@ -2624,16 +2629,16 @@ describe("mcp-write-smoke orchestration", () => {
 
     // writes never retried
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}create_note`),
+      capture.toolNames.filter((n) => n === FQ("create_note")),
     ).toHaveLength(1);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+      capture.toolNames.filter((n) => n === FQ("update_note")),
     ).toHaveLength(1);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      capture.toolNames.filter((n) => n === FQ("edit_block")),
     ).toHaveLength(2); // validateOnly once + write once
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(1);
 
     // no native API bypass — only MCP URL
@@ -2682,13 +2687,13 @@ describe("mcp-write-smoke orchestration", () => {
       ).rejects.toThrow(/mismatch/);
 
       const deletes = capture.toolNames.filter(
-        (n) => n === `${PLUGIN_NS}delete_note`,
+        (n) => n === FQ("delete_note"),
       );
       expect(deletes).toHaveLength(1);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(capture.toolNames).not.toContain(FQ("update_note"));
       // cleanup args carry documentId + expectedTitle
       const deleteArg = capture.toolArgs[
-        capture.toolNames.indexOf(`${PLUGIN_NS}delete_note`)
+        capture.toolNames.indexOf(FQ("delete_note"))
       ] as { documentId?: string; expectedTitle?: string; confirmed?: boolean };
       expect(deleteArg).toEqual({
         documentId: DOC_ID,
@@ -2718,7 +2723,7 @@ describe("mcp-write-smoke orchestration", () => {
       expect(msg).toContain(ARTIFACT_POSSIBLY_CREATED_SIGNAL);
       expect(msg).not.toMatch(/cleanup failed|cleanup delete/);
     }
-    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}delete_note`);
+    expect(capture.toolNames).not.toContain(FQ("delete_note"));
   });
 
   it("create malformed returned documentId is not known-created: no cleanup, artifactPossiblyCreated, never prints id", async () => {
@@ -2751,8 +2756,8 @@ describe("mcp-write-smoke orchestration", () => {
       expect(msg).not.toContain(BODY_MARKER);
       expect(msg).not.toMatch(/cleanup failed|cleanup delete/);
     }
-    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}delete_note`);
-    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+    expect(capture.toolNames).not.toContain(FQ("delete_note"));
+    expect(capture.toolNames).not.toContain(FQ("update_note"));
   });
 
   it("create transport/envelope/missing-ID failures report artifactPossiblyCreated and never cleanup", async () => {
@@ -2796,10 +2801,10 @@ describe("mcp-write-smoke orchestration", () => {
         // Must not claim a documentId recovery path when id is unknown
         expect(msg).not.toMatch(/documentId=2024/);
       }
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}delete_note`);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(capture.toolNames).not.toContain(FQ("delete_note"));
+      expect(capture.toolNames).not.toContain(FQ("update_note"));
       // create was attempted (dispatched)
-      expect(capture.toolNames).toContain(`${PLUGIN_NS}create_note`);
+      expect(capture.toolNames).toContain(FQ("create_note"));
     }
   });
 
@@ -2859,8 +2864,8 @@ describe("mcp-write-smoke orchestration", () => {
         expect(msg).toMatch(c.re);
         expect(msg).not.toContain("artifactPossiblyCreated");
       }
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}create_note`);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}delete_note`);
+      expect(capture.toolNames).not.toContain(FQ("create_note"));
+      expect(capture.toolNames).not.toContain(FQ("delete_note"));
     }
   });
 
@@ -2877,8 +2882,8 @@ describe("mcp-write-smoke orchestration", () => {
       await expect(
         runWrite(makeWriteFetch({ capture, createResult }) as typeof fetch),
       ).rejects.toThrow(/structuredContent/);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}delete_note`);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(capture.toolNames).not.toContain(FQ("delete_note"));
+      expect(capture.toolNames).not.toContain(FQ("update_note"));
     }
   });
 
@@ -2899,17 +2904,17 @@ describe("mcp-write-smoke orchestration", () => {
         runWrite(makeWriteFetch({ capture, updateResult }) as typeof fetch),
       ).rejects.toThrow(/txnState|verified/);
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+        capture.toolNames.filter((n) => n === FQ("delete_note")),
       ).toHaveLength(1);
       // visibility + post-edit before update; final read not reached
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+        capture.toolNames.filter((n) => n === FQ("read_note")),
       ).toHaveLength(2);
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+        capture.toolNames.filter((n) => n === FQ("edit_block")),
       ).toHaveLength(2);
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+        capture.toolNames.filter((n) => n === FQ("update_note")),
       ).toHaveLength(1);
     }
   });
@@ -2929,14 +2934,14 @@ describe("mcp-write-smoke orchestration", () => {
       ),
     ).rejects.toThrow(/body marker not found/);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(1);
     // visibility + post-edit + final; only final fails marker
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+      capture.toolNames.filter((n) => n === FQ("read_note")),
     ).toHaveLength(3);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+      capture.toolNames.filter((n) => n === FQ("update_note")),
     ).toHaveLength(1);
   });
 
@@ -2955,23 +2960,23 @@ describe("mcp-write-smoke orchestration", () => {
       ),
     ).rejects.toThrow(/ok=false/);
     const deletes = capture.toolNames.filter(
-      (n) => n === `${PLUGIN_NS}delete_note`,
+      (n) => n === FQ("delete_note"),
     );
     expect(deletes).toHaveLength(1);
     // create → visibility → resolve → segments → validateOnly → edit →
     // post-edit → update fail → cleanup delete
     expect(capture.toolNames).toEqual([
-      `${PLUGIN_NS}get_policy`,
-      `${PLUGIN_NS}list_accessible_notebooks`,
-      `${PLUGIN_NS}create_note`,
-      `${PLUGIN_NS}read_note`,
-      `${PLUGIN_NS}resolve_document`,
-      `${PLUGIN_NS}read_note_segments`,
-      `${PLUGIN_NS}edit_block`,
-      `${PLUGIN_NS}edit_block`,
-      `${PLUGIN_NS}read_note`,
-      `${PLUGIN_NS}update_note`,
-      `${PLUGIN_NS}delete_note`,
+      FQ("get_policy"),
+      FQ("list_accessible_notebooks"),
+      FQ("create_note"),
+      FQ("read_note"),
+      FQ("resolve_document"),
+      FQ("read_note_segments"),
+      FQ("edit_block"),
+      FQ("edit_block"),
+      FQ("read_note"),
+      FQ("update_note"),
+      FQ("delete_note"),
     ]);
   });
 
@@ -3016,7 +3021,7 @@ describe("mcp-write-smoke orchestration", () => {
     }
     // create + readiness + failed update + one cleanup delete attempt
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(1);
     const joined = logs.join("\n");
     expect(joined).not.toContain(TOKEN);
@@ -3035,7 +3040,7 @@ describe("mcp-write-smoke orchestration", () => {
     };
     await runWrite(makeWriteFetch({ capture }) as typeof fetch);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(1);
   });
 
@@ -3076,13 +3081,13 @@ describe("mcp-write-smoke orchestration", () => {
       expect(msg).not.toContain(BODY_MARKER);
     }
     const deletes = capture.toolNames.filter(
-      (n) => n === `${PLUGIN_NS}delete_note`,
+      (n) => n === FQ("delete_note"),
     );
     expect(deletes).toHaveLength(2);
     expect(logs.some((l) => l === "cleanup delete_note ok")).toBe(true);
     // no third delete
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(2);
   });
 
@@ -3127,7 +3132,7 @@ describe("mcp-write-smoke orchestration", () => {
       expect(msg).not.toContain("artifactPossiblyCreated");
     }
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(2);
     expect(logs.some((l) => l === "cleanup delete_note ok")).toBe(false);
   });
@@ -3154,30 +3159,30 @@ describe("mcp-write-smoke orchestration", () => {
     );
     expect(result.ok).toBe(true);
     const readNames = capture.toolNames.filter(
-      (n) => n === `${PLUGIN_NS}read_note`,
+      (n) => n === FQ("read_note"),
     );
     // 3 not-yet-visible + 1 success visibility + 1 post-edit + 1 final
     expect(readNames).toHaveLength(6);
     expect(sleepCalls).toEqual([7, 7, 7]);
-    const createIdx = capture.toolNames.indexOf(`${PLUGIN_NS}create_note`);
+    const createIdx = capture.toolNames.indexOf(FQ("create_note"));
     const resolveIdx = capture.toolNames.indexOf(
-      `${PLUGIN_NS}resolve_document`,
+      FQ("resolve_document"),
     );
     const visibilityReads = capture.toolNames
       .map((n, i) => ({ n, i }))
       .filter(
         ({ n, i }) =>
-          n === `${PLUGIN_NS}read_note` && i > createIdx && i < resolveIdx,
+          n === FQ("read_note") && i > createIdx && i < resolveIdx,
       );
     expect(visibilityReads).toHaveLength(4);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}create_note`),
+      capture.toolNames.filter((n) => n === FQ("create_note")),
     ).toHaveLength(1);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+      capture.toolNames.filter((n) => n === FQ("update_note")),
     ).toHaveLength(1);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      capture.toolNames.filter((n) => n === FQ("edit_block")),
     ).toHaveLength(2);
     expect(logs.join("\n")).toMatch(/visibility read_note ok/);
     expect(logs.join("\n")).not.toContain("SECRET_ERROR");
@@ -3218,16 +3223,16 @@ describe("mcp-write-smoke orchestration", () => {
       expect(msg).not.toContain("artifactPossiblyCreated");
     }
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+      capture.toolNames.filter((n) => n === FQ("read_note")),
     ).toHaveLength(maxAttempts);
     expect(sleepCalls).toHaveLength(maxAttempts - 1);
     expect(sleepCalls.every((ms) => ms === 11)).toBe(true);
-    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+    expect(capture.toolNames).not.toContain(FQ("update_note"));
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}create_note`),
+      capture.toolNames.filter((n) => n === FQ("create_note")),
     ).toHaveLength(1);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(1);
   });
 
@@ -3257,14 +3262,14 @@ describe("mcp-write-smoke orchestration", () => {
       }
       // hard fail on first readiness read — no retry of malformed
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+        capture.toolNames.filter((n) => n === FQ("read_note")),
       ).toHaveLength(1);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(capture.toolNames).not.toContain(FQ("update_note"));
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+        capture.toolNames.filter((n) => n === FQ("delete_note")),
       ).toHaveLength(1);
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}create_note`),
+        capture.toolNames.filter((n) => n === FQ("create_note")),
       ).toHaveLength(1);
     }
   });
@@ -3290,11 +3295,11 @@ describe("mcp-write-smoke orchestration", () => {
         ),
       ).rejects.toThrow(/mismatch|body marker not found/);
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+        capture.toolNames.filter((n) => n === FQ("read_note")),
       ).toHaveLength(1);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(capture.toolNames).not.toContain(FQ("update_note"));
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+        capture.toolNames.filter((n) => n === FQ("delete_note")),
       ).toHaveLength(1);
     }
   });
@@ -3323,20 +3328,20 @@ describe("mcp-write-smoke orchestration", () => {
       ),
     ).rejects.toThrow(/ok=false/);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}create_note`),
+      capture.toolNames.filter((n) => n === FQ("create_note")),
     ).toHaveLength(1);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+      capture.toolNames.filter((n) => n === FQ("update_note")),
     ).toHaveLength(1);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      capture.toolNames.filter((n) => n === FQ("edit_block")),
     ).toHaveLength(2);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(1);
     // 2 not-yet + 1 visibility success + 1 post-edit (no final after failed update)
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+      capture.toolNames.filter((n) => n === FQ("read_note")),
     ).toHaveLength(4);
   });
 
@@ -3389,9 +3394,9 @@ describe("mcp-write-smoke orchestration", () => {
       edit: true,
       delete: true,
     });
-    expect(capture.toolNames).toContain(`${PLUGIN_NS}create_note`);
+    expect(capture.toolNames).toContain(FQ("create_note"));
     const editArgs = capture.toolArgs.filter(
-      (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+      (_, i) => capture.toolNames[i] === FQ("edit_block"),
     ) as Array<{
       blockId?: string;
       markdown?: string;
@@ -3439,10 +3444,10 @@ describe("mcp-write-smoke orchestration", () => {
       }) as typeof fetch,
     );
     expect(result.ok).toBe(true);
-    expect(capture.toolNames).toContain(`${PLUGIN_NS}create_note`);
-    expect(capture.toolNames).toContain(`${PLUGIN_NS}edit_block`);
+    expect(capture.toolNames).toContain(FQ("create_note"));
+    expect(capture.toolNames).toContain(FQ("edit_block"));
     const editArgs = capture.toolArgs.filter(
-      (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+      (_, i) => capture.toolNames[i] === FQ("edit_block"),
     ) as Array<{ validateOnly?: boolean; confirmed?: boolean }>;
     expect(editArgs).toHaveLength(2);
     expect(editArgs.map((a) => a.validateOnly)).toEqual([true, false]);
@@ -3470,13 +3475,13 @@ describe("mcp-write-smoke orchestration", () => {
         runWrite(makeWriteFetch({ capture, resolveResult }) as typeof fetch),
       ).rejects.toThrow(/mismatch|lookupOnly|writeByPath/);
       // Failure before update: update_note must not have been called
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}read_note_segments`);
+      expect(capture.toolNames).not.toContain(FQ("update_note"));
+      expect(capture.toolNames).not.toContain(FQ("read_note_segments"));
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+        capture.toolNames.filter((n) => n === FQ("delete_note")),
       ).toHaveLength(1);
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+        capture.toolNames.filter((n) => n === FQ("edit_block")),
       ).toHaveLength(0);
     }
 
@@ -3504,13 +3509,13 @@ describe("mcp-write-smoke orchestration", () => {
       ).rejects.toThrow(
         /mismatch|not clamped|exceeds|not found|not unique|invalid format/,
       );
-      expect(capture.toolNames).toContain(`${PLUGIN_NS}resolve_document`);
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(capture.toolNames).toContain(FQ("resolve_document"));
+      expect(capture.toolNames).not.toContain(FQ("update_note"));
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+        capture.toolNames.filter((n) => n === FQ("delete_note")),
       ).toHaveLength(1);
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+        capture.toolNames.filter((n) => n === FQ("edit_block")),
       ).toHaveLength(0);
     }
   });
@@ -3557,18 +3562,18 @@ describe("mcp-write-smoke orchestration", () => {
       }
       // Only the validateOnly call — never proceeds to write or update
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+        capture.toolNames.filter((n) => n === FQ("edit_block")),
       ).toHaveLength(1);
       const editArgs = capture.toolArgs.filter(
-        (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+        (_, i) => capture.toolNames[i] === FQ("edit_block"),
       ) as Array<{ validateOnly?: boolean; confirmed?: boolean }>;
       expect(editArgs[0]).toMatchObject({
         validateOnly: true,
         confirmed: false,
       });
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(capture.toolNames).not.toContain(FQ("update_note"));
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+        capture.toolNames.filter((n) => n === FQ("delete_note")),
       ).toHaveLength(1);
     }
   });
@@ -3600,10 +3605,10 @@ describe("mcp-write-smoke orchestration", () => {
         /txnState|verified|mismatch|referenceRisk|referencing|ok=false|structuredContent|malformed/,
       );
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+        capture.toolNames.filter((n) => n === FQ("edit_block")),
       ).toHaveLength(2); // validateOnly ok + one failed write
       const editArgs = capture.toolArgs.filter(
-        (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+        (_, i) => capture.toolNames[i] === FQ("edit_block"),
       ) as Array<{
         validateOnly?: boolean;
         confirmed?: boolean;
@@ -3619,9 +3624,9 @@ describe("mcp-write-smoke orchestration", () => {
       });
       expect(editArgs[0].expectedHash).toBe(editArgs[1].expectedHash);
       // Failure before update
-      expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+      expect(capture.toolNames).not.toContain(FQ("update_note"));
       expect(
-        capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+        capture.toolNames.filter((n) => n === FQ("delete_note")),
       ).toHaveLength(1);
     }
   });
@@ -3649,17 +3654,17 @@ describe("mcp-write-smoke orchestration", () => {
     expect(result.ok).toBe(true);
     // 1 visibility + 2 not-yet post-edit + 1 post-edit success + 1 final
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+      capture.toolNames.filter((n) => n === FQ("read_note")),
     ).toHaveLength(5);
     expect(sleepCalls).toEqual([3, 3]);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      capture.toolNames.filter((n) => n === FQ("edit_block")),
     ).toHaveLength(2);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+      capture.toolNames.filter((n) => n === FQ("update_note")),
     ).toHaveLength(1);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(1);
     expect(logs.join("\n")).toMatch(/post-edit read_note ok/);
     expect(logs.join("\n")).toMatch(/update_note ok/);
@@ -3695,14 +3700,14 @@ describe("mcp-write-smoke orchestration", () => {
     }
     // visibility(1) + post-edit polls(maxAttempts); update never reached
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}read_note`),
+      capture.toolNames.filter((n) => n === FQ("read_note")),
     ).toHaveLength(1 + maxAttempts);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}edit_block`),
+      capture.toolNames.filter((n) => n === FQ("edit_block")),
     ).toHaveLength(2);
-    expect(capture.toolNames).not.toContain(`${PLUGIN_NS}update_note`);
+    expect(capture.toolNames).not.toContain(FQ("update_note"));
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(1);
   });
 
@@ -3717,14 +3722,14 @@ describe("mcp-write-smoke orchestration", () => {
     };
     await runWrite(makeWriteFetch({ capture }) as typeof fetch);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}create_note`),
+      capture.toolNames.filter((n) => n === FQ("create_note")),
     ).toHaveLength(1);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}update_note`),
+      capture.toolNames.filter((n) => n === FQ("update_note")),
     ).toHaveLength(1);
     // validateOnly + actual write are two intentional distinct calls, each once
     const editArgs = capture.toolArgs.filter(
-      (_, i) => capture.toolNames[i] === `${PLUGIN_NS}edit_block`,
+      (_, i) => capture.toolNames[i] === FQ("edit_block"),
     ) as Array<{
       confirmed?: boolean;
       validateOnly?: boolean;
@@ -3740,7 +3745,7 @@ describe("mcp-write-smoke orchestration", () => {
     expect(editArgs[0].expectedHash).toBe(editArgs[1].expectedHash);
     expect(editArgs[0].expectedHash).toBe(STATE_HASH);
     expect(
-      capture.toolNames.filter((n) => n === `${PLUGIN_NS}delete_note`),
+      capture.toolNames.filter((n) => n === FQ("delete_note")),
     ).toHaveLength(1);
   });
 });

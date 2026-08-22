@@ -32,13 +32,31 @@ describe("kernel IPluginLifecycle bindings", () => {
     }
   });
 
-  it("does not re-register MCP tools inside onrunning", () => {
+  it("does not re-register Agent capabilities inside onrunning", () => {
     const onrunningMatch = source.match(
       /private\s+async\s+onrunning\s*\(\s*\)\s*:\s*Promise<void>\s*\{([\s\S]*?)\n  \}/,
     );
     expect(onrunningMatch).not.toBeNull();
     const body = onrunningMatch![1];
-    expect(body).not.toMatch(/registerTool|registerPolicyTool|mcp\.register/);
+    expect(body).not.toMatch(
+      /registerCapability|registerPolicyTool|agent\.register/,
+    );
+  });
+
+  it("registers all 28 tools through the SiYuan 3.8.1 Agent capability API", () => {
+    expect(source).toMatch(/this\.api\.agent\.registerCapability\(/);
+    expect(source).toMatch(/this\.api\.agent\.unregisterCapability\(/);
+    expect(source).not.toMatch(/this\.api\.mcp\.(?:registerTool|unregisterTool)\(/);
+    expect(source.match(/await\s+this\.registerTool\(/g)).toHaveLength(28);
+  });
+
+  it("declares conservative local effects for read and write capabilities", () => {
+    expect(source).toMatch(
+      /function\s+genericToolConfig[\s\S]*?:\s*kernel\.IAgentCapabilityConfig/,
+    );
+    expect(source).toMatch(
+      /effects:\s*readOnly\s*\?\s*\{\s*localRead:\s*true\s*\}\s*:\s*\{\s*localRead:\s*true,\s*localWrite:\s*true\s*\}/,
+    );
   });
 });
 

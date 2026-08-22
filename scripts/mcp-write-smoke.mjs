@@ -52,6 +52,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertCatalogMatch,
+  buildAgentCapabilityToolName,
   assertJsonRpcSuccess,
   assertLoopbackUrl,
   assertNoJsonRpcErrors,
@@ -69,7 +70,7 @@ const DEFAULT_MCP_URL = "http://127.0.0.1:6806/mcp";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const CLIENT_INFO = {
   name: "siyuanmaster-mcp-write-smoke",
-  version: "0.6.0",
+  version: "0.6.1",
 };
 
 /** SiYuan block/doc/notebook id: 14-digit timestamp + 7 lowercase alnum. */
@@ -1049,7 +1050,11 @@ export async function runMcpWriteSmoke(options) {
     throw new Error("catalog.namespaces.plugin is required");
   }
 
-  const tool = (bare) => `${pluginNamespace}${bare}`;
+  const technicalId = catalog?.product?.technicalId;
+  if (typeof technicalId !== "string" || !technicalId) {
+    throw new Error("catalog.product.technicalId is required");
+  }
+  const tool = (bare) => buildAgentCapabilityToolName(technicalId, bare);
 
   let rpcId = 0;
   const nextId = () => {

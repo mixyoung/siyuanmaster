@@ -2,8 +2,8 @@
   "name": "siyuanmaster",
   "author": "mixyoung",
   "url": "https://github.com/mixyoung/siyuanmaster",
-  "version": "0.6.0",
-  "minAppVersion": "3.7.0",
+  "version": "0.6.1",
+  "minAppVersion": "3.8.1",
   "kernels": [
     "all"
   ],

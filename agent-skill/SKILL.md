@@ -70,6 +70,17 @@ When `get_policy.capabilities.wikiTemplates` is available:
 
 If `wikiTemplates` is absent, use the templates in the reference directly and validate their structure manually. Do not call or invent unavailable template tools.
 
+When `get_policy.capabilities.pdfConversionValidation` is available and the user asks to convert a local PDF:
+
+- prefer Marker for complex/scanned PDFs that need rich layout recovery, or PyMuPDF4LLM for local digital PDFs; Pandoc is not a PDF-to-Markdown reader;
+- first probe whether the selected external converter is available. If it is absent, tell the user which converter is recommended and request explicit permission to install it; never silently install a dependency, runtime, or model;
+- when the user declines installation or the converter cannot run, use the bundled deterministic fallback. A multimodal model may be proposed for visual repair of a scan or complex layout, but it is never presumed exact and must be checked against the PDF text, annotations, and rich-feature acceptance criteria before any write;
+- run the external converter outside the plugin and call `validate_pdf_conversion` before any note write with the converter identity and grounded rich-feature minimums;
+- treat validation as metadata-only proof, never as conversion, upload, source registration, or write authorization; and
+- do not ask the plugin to install dependencies, download models, or execute an arbitrary local command.
+
+If `pdfConversionValidation` is absent, follow the same external-converter-first process and inspect rich features manually.
+
 When `get_policy.capabilities.sourceIngestPlan` is available, use `plan_source_ingest` to keep one-source Ingest decisions explicit:
 
 - start with the exact immutable Raw `sourceDocumentId`, stable source identity when grounded, and the intended allowed Wiki notebook;
@@ -81,6 +92,38 @@ When `get_policy.capabilities.sourceIngestPlan` is available, use `plan_source_i
 - treat every result as a read-only preview (`previewOnly=true`, `writeExecuted=false`). Re-plan after discovery, selection, source identity, policy, or document state changes.
 
 If `sourceIngestPlan` is absent, follow the reference's staged discovery and Ingest sequence manually. Never claim an Ingest plan was generated or executed by an older plugin.
+
+## Source links and webpage titles
+
+When writing external sources into SiYuan notes, Raw manifests, source
+containers, or Wiki `Sources` sections:
+
+- render each HTTP(S) source as a clickable Markdown link whose visible text is
+  the freshly verified official webpage title, for example
+  `[生成式人工智能服务管理暂行办法](https://www.cac.gov.cn/2023-07/13/c_1690898327029107.htm)`;
+- do not leave a bare, non-clickable URL when the page title is available, and
+  never guess a title from the URL slug or surrounding discussion;
+- when the title cannot be read or verified, use the URL itself as the temporary
+  clickable link text and mark the title as pending verification;
+- keep the canonical URL in source metadata when the document schema calls for
+  it; a rendered link does not replace provenance metadata;
+- use SiYuan block references for internal documents instead of treating their
+  IDs or paths as external URLs; and
+- re-read the written note to verify both the displayed title and the actual
+  link target.
+
+## Local PDF to Markdown fidelity
+
+When converting a local PDF into a Markdown note without summarization:
+
+- use a mature layout-aware converter for page order, headings, code, tables, bold spans, and link annotations; `scripts/pdf_to_markdown.py --engine pymupdf4llm` is a thin adapter for an already installed PyMuPDF4LLM environment and restores only verified PDF annotations, while its `fallback` engine remains a fallback/postprocessor; never vendor or auto-install a converter or model inside the Skill;
+- never put tool warnings, transport messages, or HTML comments (including provenance and page markers) in the note body; retain source path/hash only through separately authorized metadata or manifest storage;
+- reflow visual line wraps only inside the same paragraph, repair cross-line words and URLs, and preserve the source's actual headings and statements;
+- fence commands as code, reconstruct detected tables as Markdown tables instead of flattened prose, and never let code comments become document headings; and
+- preserve PDF bold spans and valid link annotations when the extractor exposes them. Do not infer links from nearby text; reject pseudo-links generated for file names and render those file names as inline code; and
+- for Chinese technical prose, preserve Chinese full-width punctuation; use one space between Chinese and English, Arabic numerals, or inline code, but never before Chinese punctuation. Keep official product spelling; use inline code only for exact commands, identifiers, paths, options, and file names; and
+- make each source citation one list item. Apply a descriptive clickable title only after the target page title has been verified; and
+- before writing, check for visible comments, truncation text, unfenced commands, and flattened tables; after writing, re-read the first and final source page plus every code/table region.
 
 ## Offline webpage archive
 

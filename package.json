@@ -1,6 +1,6 @@
 {
   "name": "siyuanmaster",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "description": "SiYuanMaster — policy-aware SiYuan access boundary and safe write tools for trusted local agents.",
   "scripts": {
@@ -17,7 +17,7 @@
   "devDependencies": {
     "archiver": "^7.0.1",
     "esbuild": "^0.25.6",
-    "siyuan": "1.2.3",
+    "siyuan": "1.2.4",
     "typescript": "^6.0.3",
     "vitest": "^3.2.4"
   },

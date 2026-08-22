@@ -10,13 +10,15 @@
 // - Token only from SIYUAN_API_TOKEN; never printed
 // - Fail closed on HTTP, JSON-RPC error, or result.isError
 // - Errors never include raw HTTP/SSE/JSON-RPC body text or fragments
-// - Exact catalog match for 27 plugin__siyuanmaster__* tools; legacy namespace count = 0
+// - Exact catalog match for 27 SiYuan 3.8.1 Agent capability tool names;
+//   plugin__siyuanmaster__* prefix, stable hash suffix, legacy count = 0
 //
 // Default discovery: zero note writes.
 // --read-smoke: two read-only tools; may produce metadata-only audit entries.
 // Does not start/stop SiYuan; does not touch auth config.
 // Script always sends Authorization: Token … (does not claim native auth is required).
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -25,10 +27,11 @@ const PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_MCP_URL = "http://127.0.0.1:6806/mcp";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const EXPECTED_PLUGIN_TOOL_COUNT = 27;
+const MAX_AGENT_CAPABILITY_TOOL_NAME_LENGTH = 64;
 const LEGACY_NAMESPACE = "plugin__siyuan_agent_access__";
 const CLIENT_INFO = {
   name: "siyuanmaster-mcp-smoke",
-  version: "0.6.0",
+  version: "0.6.1",
 };
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -38,6 +41,28 @@ export const catalogPath = path.join(rootDir, "catalog", "capabilities.json");
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for unit tests)
 // ---------------------------------------------------------------------------
+
+/**
+ * Reproduce SiYuan 3.8.1 kernel/plugin/api_agent.go's stable model name.
+ * The hash uses the unsanitized plugin/capability identity; the visible base
+ * replaces every non-ASCII-alphanumeric character with an underscore.
+ */
+export function buildAgentCapabilityToolName(pluginName, capabilityName) {
+  if (typeof pluginName !== "string" || pluginName.length === 0) {
+    throw new Error("plugin technical id is required");
+  }
+  if (typeof capabilityName !== "string" || capabilityName.trim().length === 0) {
+    throw new Error("capability name is required");
+  }
+  const localName = capabilityName.trim();
+  const sanitize = (value) => value.replace(/[^0-9a-zA-Z]/g, "_");
+  const suffix = `__${createHash("sha256")
+    .update(`${pluginName}\0${localName}`, "utf8")
+    .digest("hex")
+    .slice(0, 12)}`;
+  const base = `plugin__${sanitize(pluginName)}__${sanitize(localName)}`;
+  return `${base.slice(0, MAX_AGENT_CAPABILITY_TOOL_NAME_LENGTH - suffix.length)}${suffix}`;
+}
 
 /** True when hostname is loopback (IPv4, IPv6, or localhost). */
 export function isLoopbackHostname(hostname) {
@@ -333,11 +358,15 @@ export function validateAgainstCatalog(discoveredNames, catalog) {
       `catalog.pluginTools.length must be ${EXPECTED_PLUGIN_TOOL_COUNT} (got ${bare.length})`,
     );
   }
+  const technicalId = catalog?.product?.technicalId;
+  if (typeof technicalId !== "string" || !technicalId) {
+    throw new Error("catalog.product.technicalId is required");
+  }
   const expected = bare.map((t) => {
     if (!t?.name) {
       throw new Error("catalog pluginTools entry missing name");
     }
-    return `${pluginNamespace}${t.name}`;
+    return buildAgentCapabilityToolName(technicalId, t.name);
   });
 
   const { plugin, legacy } = partitionPluginTools(
@@ -590,9 +619,13 @@ export async function runMcpSmoke(options) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const catalog = options.catalog ?? (await loadCatalog());
   const pluginNamespace = catalog.namespaces.plugin;
+  const technicalId = catalog?.product?.technicalId;
+  if (typeof technicalId !== "string" || !technicalId) {
+    throw new Error("catalog.product.technicalId is required");
+  }
   const readSmokeTools = [
-    `${pluginNamespace}get_policy`,
-    `${pluginNamespace}list_accessible_notebooks`,
+    buildAgentCapabilityToolName(technicalId, "get_policy"),
+    buildAgentCapabilityToolName(technicalId, "list_accessible_notebooks"),
   ];
 
   let rpcId = 0;

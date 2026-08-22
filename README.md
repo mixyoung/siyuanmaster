@@ -6,12 +6,14 @@ SiYuanMaster is a native SiYuan plugin that lets trusted local AI assistants rea
 |---|---|
 | **Brand** | SiYuanMaster / 思源大师 |
 | **Package** | `siyuanmaster` |
-| **Version** | `0.6.0` |
+| **Version** | `0.6.1` |
 | **Technical plugin ID** | `siyuanmaster` |
 | **MCP namespace** | `plugin__siyuanmaster__*` |
 | **Repository** | https://github.com/mixyoung/siyuanmaster |
 
 **Breaking change (0.5.0):** The technical plugin ID is now `siyuanmaster`. Install path is `data/plugins/siyuanmaster`; MCP tools are `plugin__siyuanmaster__*`. Previous `plugin__siyuan_agent_access__*` names are gone — **update external agent/skill configs manually**. On first load, policy/audit are **auto-copied** from `data/storage/petal/siyuan-agent-access/` into `data/storage/petal/siyuanmaster/` when the new side is missing (new always wins; fail-closed). The legacy petal directory is **kept and never deleted**.
+
+**Compatibility change (0.6.1):** SiYuan 3.8.1 removed the kernel plugin `siyuan.mcp.registerTool` surface. SiYuanMaster now registers all 27 controlled operations through `siyuan.agent.registerCapability` with conservative local read/write effects. Runtime model names keep the `plugin__siyuanmaster__` prefix and add SiYuan's stable 12-hex hash suffix; discover and call the exact names returned by `tools/list` rather than synthesizing the former unsuffixed names.
 
 ## Overview
 
@@ -28,7 +30,7 @@ SiYuanMaster runs inside SiYuan as a desktop plugin. It registers policy-aware t
 
 - Sidebar: connection status, safety policy, and P1 capability status
 - GUI configuration for notebook access, operations, tagging, and write safety
-- **27** tools on `/mcp` (original 16 + 3 P1 + 8 knowledge-compounding M1): fully-qualified names are `plugin__siyuanmaster__*`
+- **27** Agent capabilities exposed on `/mcp` (original 16 + 3 P1 + 8 knowledge-compounding M1): model names use `plugin__siyuanmaster__<name>__<stable-hash>`
 - Bounded document-tree browsing (`list_document_tree`; metadata only, never full bodies)
 - Path lookup (`resolve_document`, read-only), long-note windows (`read_note_segments`), block edit (`edit_block`)
 - Kernel-enforced notebook boundaries; notebook decisions apply to descendants
@@ -46,7 +48,7 @@ SiYuanMaster runs inside SiYuan as a desktop plugin. It registers policy-aware t
 3. Enable the plugin in SiYuan and open the **SiYuanMaster** dock on the right.
 4. Select notebooks to allow. Default access is allowlist mode with an **empty** selection — nothing is accessible until you choose notebooks.
 
-Minimum SiYuan version: `3.7.0` (see `plugin.json`).
+Minimum SiYuan version: `3.8.1` (see `plugin.json`).
 
 ## Connect an AI assistant (MCP)
 
@@ -68,15 +70,15 @@ Point a local MCP client at SiYuan’s built-in endpoint. Use your own API token
 
 Recommended first calls:
 
-1. `plugin__siyuanmaster__get_policy`
-2. `plugin__siyuanmaster__list_accessible_notebooks`
+1. The discovered `get_policy` capability (`plugin__siyuanmaster__get_policy__<stable-hash>`)
+2. The discovered `list_accessible_notebooks` capability (`plugin__siyuanmaster__list_accessible_notebooks__<stable-hash>`)
 3. Then browse with `list_document_tree`, resolve paths with `resolve_document`, read long notes with `read_note_segments`, or edit blocks with `edit_block`.
 
 When policy requires confirmation, obtain user approval, then retry with `confirmed=true`. Never set `confirmed=true` without real approval.
 
 ## Tools (27 = original 16 + 3 P1 + 8 knowledge-compounding M1)
 
-All tools are registered as `plugin__siyuanmaster__<name>`.
+All tools are registered as Agent capabilities and exposed as `plugin__siyuanmaster__<name>__<stable-12-hex-hash>`. The catalog keeps the stable local names below; `tools/list` is authoritative for the full runtime name.
 
 **Original 16** (names unchanged):
 
@@ -132,17 +134,17 @@ Safe Write Transaction (`update_note`, `edit_block`): pre-write snapshot (failur
 
 These are optional local helpers. They do not replace the TypeScript plugin path for everyday SiYuan use.
 
-## Verified on SiYuan 3.8.0-alpha.2 (local)
+## Verified on SiYuan 3.8.1 (local)
 
-Evidence from a **real local SiYuan 3.8.0-alpha.2** instance (dedicated disposable notebook; plugin tools only):
+Current 0.6.1 evidence from a real local SiYuan 3.8.1 instance:
 
-- MCP `initialize` negotiated protocol **`2025-03-26`**
-- Last 0.5.2 live baseline: `tools/list` had **51** tools total — **19** `plugin__siyuanmaster__*`, **0** legacy `plugin__siyuan_agent_access__*`. Re-run live smoke after installing 0.6.0; do not reuse that count as 0.6.0 evidence.
-- Read smoke: `get_policy`, `list_accessible_notebooks`
-- Full write smoke (writes never retried): `create_note` → visibility `read_note` → `resolve_document` → `read_note_segments(includeStateHash=true)` → `edit_block validateOnly=true` (no write) → **one** confirmed `edit_block` committed and verified → post-edit `read_note` → **one** `update_note` → final `read_note` → `delete_note` cleanup
-- Audit metadata distinguishes validateOnly (`preview=true`) from real edit (`preview=false`)
+- Safe install backed up 0.6.0, installed 13 files that exactly match `dist/`, and reloaded the plugin.
+- MCP `initialize` negotiated protocol **`2025-03-26`**.
+- `tools/list` had **58** tools total — **27** `plugin__siyuanmaster__*` Agent capabilities, **0** legacy `plugin__siyuan_agent_access__*`, and 31 other SiYuan tools.
+- Read smoke called the stable-hash `get_policy` and `list_accessible_notebooks` capabilities successfully; kernel RPC returned `ready=true` and `toolCount=27`.
+- The installed `kernel.js` contains the Agent registration/unregistration calls and no legacy `.mcp.registerTool(...)` call.
 
-This is **not** a claim of full external-project parity (Bridge / Sisyphus) or of every tool combination under every policy.
+This 3.8.1 compatibility acceptance did not run destructive note writes. The earlier 3.8.0-alpha.2 disposable-notebook evidence covered the full create/read/resolve/segments/edit/update/delete workflow, but it is historical evidence rather than a substitute for a future 3.8.1 write smoke. This is **not** a claim of full external-project parity (Bridge / Sisyphus) or of every tool combination under every policy.
 
 ## Current limitations
 
@@ -163,7 +165,7 @@ cargo test --workspace
 
 ### MCP discovery smoke (optional)
 
-Requires a running local SiYuan and `SIYUAN_API_TOKEN`. Loopback only; the token is never printed. Validates the 27 `plugin__siyuanmaster__*` tools against `catalog/capabilities.json` and asserts zero legacy `plugin__siyuan_agent_access__*` names.
+Requires a running local SiYuan and `SIYUAN_API_TOKEN`. Loopback only; the token is never printed. Reproduces SiYuan 3.8.1's stable capability-name hash, validates the exact 27 `plugin__siyuanmaster__*` names against `catalog/capabilities.json`, and asserts zero legacy `plugin__siyuan_agent_access__*` names.
 
 - **Default discovery:** zero note writes (initialize → session → tools/list + catalog match only).
 - **`--read-smoke`:** sequentially calls the two read-only tools `get_policy` and `list_accessible_notebooks`; prints only `isError`, whether `structuredContent` is present, top-level keys, and top-level array field names/counts — never array elements or values. These calls may write **metadata-only audit** entries.

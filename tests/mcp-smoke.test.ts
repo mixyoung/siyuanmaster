@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertCatalogMatch,
+  buildAgentCapabilityToolName,
   assertJsonRpcSuccess,
   assertLoopbackUrl,
   assertNoJsonRpcErrors,
@@ -25,8 +26,11 @@ import {
 
 const PLUGIN_NS = "plugin__siyuanmaster__";
 const LEGACY_NS = "plugin__siyuan_agent_access__";
+const TECHNICAL_ID = "siyuanmaster";
+const FQ = (name: string) => buildAgentCapabilityToolName(TECHNICAL_ID, name);
 
 const CATALOG_27 = {
+  product: { technicalId: TECHNICAL_ID },
   namespaces: { plugin: PLUGIN_NS },
   pluginTools: [
     "get_policy",
@@ -59,7 +63,7 @@ const CATALOG_27 = {
   ].map((name) => ({ name, category: "x", readOnly: true, confirmDefault: false })),
 };
 
-const FQ_27 = CATALOG_27.pluginTools.map((t) => `${PLUGIN_NS}${t.name}`);
+const FQ_27 = CATALOG_27.pluginTools.map((t) => FQ(t.name));
 
 function mockHeaders(map: Record<string, string | null> = {}) {
   return {
@@ -334,6 +338,19 @@ describe("mcp-smoke fail-closed errors", () => {
   });
 });
 describe("mcp-smoke catalog set validation", () => {
+  it("reproduces SiYuan 3.8.1 stable Agent capability model names", () => {
+    expect(FQ("get_policy")).toBe(
+      "plugin__siyuanmaster__get_policy__19c4e8833d17",
+    );
+    expect(FQ("list_accessible_notebooks")).toBe(
+      "plugin__siyuanmaster__list_accessible_notebooks__861e06b0cf3c",
+    );
+    expect(buildAgentCapabilityToolName("a/b", "x-y")).toMatch(
+      /^plugin__a_b__x_y__[0-9a-f]{12}$/,
+    );
+    expect(buildAgentCapabilityToolName("x".repeat(80), "y")).toHaveLength(64);
+  });
+
   it("matches exactly 27 plugin tools and zero legacy", () => {
     const discovered = [
       ...FQ_27,
@@ -350,6 +367,7 @@ describe("mcp-smoke catalog set validation", () => {
 
   it("fails when catalog.pluginTools.length is not 27", () => {
     const short = {
+      product: { technicalId: TECHNICAL_ID },
       namespaces: { plugin: PLUGIN_NS },
       pluginTools: CATALOG_27.pluginTools.slice(0, 26),
     };
@@ -357,6 +375,7 @@ describe("mcp-smoke catalog set validation", () => {
       /pluginTools\.length must be 27/,
     );
     const long = {
+      product: { technicalId: TECHNICAL_ID },
       namespaces: { plugin: PLUGIN_NS },
       pluginTools: [
         ...CATALOG_27.pluginTools,
@@ -364,7 +383,7 @@ describe("mcp-smoke catalog set validation", () => {
       ],
     };
     expect(() =>
-      validateAgainstCatalog([...FQ_27, `${PLUGIN_NS}extra_tool`], long),
+      validateAgainstCatalog([...FQ_27, FQ("extra_tool")], long),
     ).toThrow(/pluginTools\.length must be 27/);
   });
 
@@ -373,7 +392,8 @@ describe("mcp-smoke catalog set validation", () => {
     expect(catalog.pluginTools).toHaveLength(27);
     expect(catalog.namespaces.plugin).toBe(PLUGIN_NS);
     const discovered = catalog.pluginTools.map(
-      (t: { name: string }) => `${catalog.namespaces.plugin}${t.name}`,
+      (t: { name: string }) =>
+        buildAgentCapabilityToolName(catalog.product.technicalId, t.name),
     );
     expect(discovered).toHaveLength(27);
     const v = validateAgainstCatalog(discovered, catalog);
@@ -390,9 +410,9 @@ describe("mcp-smoke catalog set validation", () => {
   });
 
   it("fails when an unexpected plugin tool is present", () => {
-    const withExtra = [...FQ_27, `${PLUGIN_NS}unexpected_tool`];
+    const withExtra = [...FQ_27, FQ("unexpected_tool")];
     const v = validateAgainstCatalog(withExtra, CATALOG_27);
-    expect(v.extra).toContain(`${PLUGIN_NS}unexpected_tool`);
+    expect(v.extra).toContain(FQ("unexpected_tool"));
     expect(() => assertCatalogMatch(v)).toThrow(/extra/);
   });
 
@@ -405,12 +425,12 @@ describe("mcp-smoke catalog set validation", () => {
 
   it("partitions namespaces correctly", () => {
     const names = [
-      `${PLUGIN_NS}get_policy`,
+      FQ("get_policy"),
       `${LEGACY_NS}get_policy`,
       "native_foo",
     ];
     const p = partitionPluginTools(names, PLUGIN_NS);
-    expect(p.plugin).toEqual([`${PLUGIN_NS}get_policy`]);
+    expect(p.plugin).toEqual([FQ("get_policy")]);
     expect(p.legacy).toEqual([`${LEGACY_NS}get_policy`]);
     expect(p.other).toEqual(["native_foo"]);
     expect(countToolNamespaces(names, PLUGIN_NS)).toEqual({
@@ -902,7 +922,7 @@ describe("mcp-smoke orchestration", () => {
           });
         }
         const tool = body.params?.name;
-        if (tool === `${PLUGIN_NS}get_policy`) {
+        if (tool === FQ("get_policy")) {
           return jsonResponse({
             jsonrpc: "2.0",
             id: body.id,
@@ -920,7 +940,7 @@ describe("mcp-smoke orchestration", () => {
             },
           });
         }
-        if (tool === `${PLUGIN_NS}list_accessible_notebooks`) {
+        if (tool === FQ("list_accessible_notebooks")) {
           return jsonResponse({
             jsonrpc: "2.0",
             id: body.id,
@@ -1138,8 +1158,8 @@ describe("mcp-smoke orchestration", () => {
     });
 
     expect(capture.toolNames).toEqual([
-      `${PLUGIN_NS}get_policy`,
-      `${PLUGIN_NS}list_accessible_notebooks`,
+      FQ("get_policy"),
+      FQ("list_accessible_notebooks"),
     ]);
 
     const initNotif = capture.bodies.find(
@@ -1151,9 +1171,9 @@ describe("mcp-smoke orchestration", () => {
     expect(initNotif?.params).toEqual({});
 
     expect(summary.readSmoke?.tools).toHaveLength(2);
-    expect(summary.readSmoke?.tools[0].tool).toBe(`${PLUGIN_NS}get_policy`);
+    expect(summary.readSmoke?.tools[0].tool).toBe(FQ("get_policy"));
     expect(summary.readSmoke?.tools[1].tool).toBe(
-      `${PLUGIN_NS}list_accessible_notebooks`,
+      FQ("list_accessible_notebooks"),
     );
 
     const joined = [
@@ -1199,8 +1219,8 @@ describe("mcp-smoke orchestration", () => {
       "tools/call",
     ]);
     expect(capture.toolNames).toEqual([
-      `${PLUGIN_NS}get_policy`,
-      `${PLUGIN_NS}list_accessible_notebooks`,
+      FQ("get_policy"),
+      FQ("list_accessible_notebooks"),
     ]);
 
     expect(capture.headerSnapshots).toHaveLength(5);

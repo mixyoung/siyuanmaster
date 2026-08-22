@@ -7,8 +7,8 @@
       "default": "SiYuanMaster",
       "zh-CN": "思源大师"
     },
-    "version": "0.6.0",
-    "minAppVersion": "3.7.0"
+    "version": "0.6.1",
+    "minAppVersion": "3.8.1"
   },
   "namespaces": {
     "plugin": "plugin__siyuanmaster__",
@@ -95,6 +95,12 @@
     },
     {
       "name": "validate_wiki_template",
+      "category": "knowledge",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "validate_pdf_conversion",
       "category": "knowledge",
       "readOnly": true,
       "confirmDefault": false
@@ -278,6 +284,6 @@
   "compatibility": {
     "originalToolCount": 16,
     "technicalIdPolicy": "siyuanmaster-with-storage-migration",
-    "note": "0.5.0 technical ID is siyuanmaster; MCP tools are plugin__siyuanmaster__*. On first load, policy/audit are auto-copied from data/storage/petal/siyuan-agent-access/ into data/storage/petal/siyuanmaster/ when the new side is missing (new always wins; fail-closed defaults; migration marker for idempotency). The legacy petal directory is retained and never deleted. External agent/skill configs must still be updated manually to the new MCP namespace."
+    "note": "0.6.1 targets SiYuan 3.8.1 and registers the 27 controlled tools through siyuan.agent.registerCapability. Agent model names retain the plugin__siyuanmaster__ prefix and add SiYuan's stable hash suffix. On first load, policy/audit are auto-copied from data/storage/petal/siyuan-agent-access/ into data/storage/petal/siyuanmaster/ when the new side is missing (new always wins; fail-closed defaults; migration marker for idempotency). The legacy petal directory is retained and never deleted."
   }
 }

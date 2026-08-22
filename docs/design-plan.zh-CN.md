@@ -4,7 +4,7 @@
 > 版本：v0.4
 > 更新日期：2026-07-31
 > 当前验证环境：SiYuan 3.7.1  
-> 建议最低版本：SiYuan 3.7.0  
+> 建议最低版本：SiYuan 3.8.1
 
 ## 1. 产品定位
 
@@ -282,7 +282,7 @@ data/storage/petal/siyuanmaster/policy.json
   └─ 加载插件内核 kernel.js
        ├─ 读取 policy.json
        ├─ 初始化权限引擎
-       └─ 通过 siyuan.mcp.registerTool 注册工具
+       └─ 通过 siyuan.agent.registerCapability 注册能力
 ```
 
 因此：
@@ -294,7 +294,7 @@ data/storage/petal/siyuanmaster/policy.json
 
 ### 3.3 已注册的语义工具
 
-建议只注册以下小而清晰的工具：
+建议只注册以下小而清晰的工具。表中是省略稳定哈希后缀的逻辑标识；思源 3.8.1 运行时模型名为 `plugin__siyuanmaster__<name>__<稳定哈希>`，完整名称以 `tools/list` 为准：
 
 | 工具 | 作用 | 默认风险 |
 |---|---|---|

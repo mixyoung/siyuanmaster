@@ -56,6 +56,13 @@ import {
   type IngestDiscoveryState,
 } from "./ingest-plan";
 import {
+  PDF_CONVERTERS,
+  PDF_TEXT_PROFILES,
+  validatePdfConversion,
+  type PdfConverter,
+  type PdfTextProfile,
+} from "./pdf-conversion";
+import {
   listWikiTemplates,
   renderWikiTemplate,
   validateWikiTemplate,
@@ -152,6 +159,14 @@ function boundedInteger(
     return fallback;
   }
   return Math.min(maximum, Math.max(minimum, Math.round(value)));
+}
+
+function optionalBoundedInteger(value: unknown, label: string, minimum: number, maximum: number): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new PolicyViolation("invalid_request", `${label} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return value;
 }
 
 function stringInput(
@@ -340,21 +355,23 @@ function genericToolConfig(
   description: string,
   inputSchema: Record<string, unknown>,
   readOnly: boolean,
-): kernel.IMcpToolConfig {
+): kernel.IAgentCapabilityConfig {
   return {
     title,
     description,
-    annotations: {
-      readOnlyHint: readOnly,
-    },
+    // SiYuan 3.8.1 Agent approval is driven by declared effects. Read
+    // capabilities may inspect local note/plugin state; mutating capabilities
+    // conservatively declare both the reads needed for policy/state checks and
+    // the eventual local write.
+    effects: readOnly
+      ? { localRead: true }
+      : { localRead: true, localWrite: true },
     inputSchema,
     outputSchema: {
       type: "object",
       additionalProperties: true,
     },
-  } as kernel.IMcpToolConfig & {
-    annotations: { readOnlyHint: boolean };
-  };
+  } as kernel.IAgentCapabilityConfig;
 }
 
 function confirmedProperty(): Record<string, unknown> {
@@ -397,7 +414,7 @@ class SiYuanMasterKernelPlugin {
     this.api.storage,
   );
   private policy: PluginPolicy = clonePolicy(DEFAULT_POLICY);
-  private readonly registeredTools: string[] = [];
+  private readonly registeredCapabilities: string[] = [];
   private readonly structurePreviews = new Map<
     string,
     StructurePreview
@@ -442,6 +459,7 @@ class SiYuanMasterKernelPlugin {
     await this.registerListWikiTemplatesTool();
     await this.registerRenderWikiTemplateTool();
     await this.registerValidateWikiTemplateTool();
+    await this.registerValidatePdfConversionTool();
     await this.registerPlanSourceIngestTool();
     await this.registerCreateTool();
     await this.registerAppendTool();
@@ -457,21 +475,22 @@ class SiYuanMasterKernelPlugin {
     await this.registerAuditTool();
 
     await this.api.logger.info(
-      `SiYuanMaster loaded with ${this.registeredTools.length} MCP tools (technical id siyuanmaster)`,
+      `SiYuanMaster loaded with ${this.registeredCapabilities.length} Agent capabilities (technical id siyuanmaster)`,
     );
   }
 
   /**
-   * Kernel "running" transition after onload. Intentionally empty: tools and
-   * RPC are registered in onload; re-doing that here would double-register.
+   * Kernel "running" transition after onload. Intentionally empty: Agent
+   * capabilities and RPC are registered in onload; re-doing that here would
+   * double-register.
    */
   private async onrunning(): Promise<void> {
     // no-op: IPluginLifecycle requires a bound function on SiYuan 3.8+
   }
 
   private async onunload(): Promise<void> {
-    for (const tool of this.registeredTools) {
-      await this.api.mcp.unregisterTool(tool);
+    for (const capability of this.registeredCapabilities) {
+      await this.api.agent.unregisterCapability(capability);
     }
     await this.api.rpc.unbind("reloadPolicy");
     await this.api.rpc.unbind("getStatus");
@@ -524,7 +543,7 @@ class SiYuanMasterKernelPlugin {
       ready: true,
       product: "siyuanmaster",
       technicalId: "siyuanmaster",
-      toolCount: this.registeredTools.length,
+      toolCount: this.registeredCapabilities.length,
       accessMode: this.policy.access.mode,
       selectedNotebookCount:
         this.policy.access.selectedNotebookIds.length,
@@ -538,6 +557,7 @@ class SiYuanMasterKernelPlugin {
         knowledgeRegistry: true,
         authorityLookup: true,
         wikiTemplates: true,
+        pdfConversionValidation: true,
         sourceIngestPlan: true,
         permissionInheritance: this.policy.safety.permissionInheritance,
         referenceProtection: this.policy.safety.referenceProtection,
@@ -547,11 +567,11 @@ class SiYuanMasterKernelPlugin {
 
   private async registerTool(
     name: string,
-    config: kernel.IMcpToolConfig,
+    config: kernel.IAgentCapabilityConfig,
     handler: (input: Record<string, unknown>) => Promise<unknown>,
   ): Promise<void> {
-    await this.api.mcp.registerTool(name, config, handler);
-    this.registeredTools.push(name);
+    await this.api.agent.registerCapability(name, config, handler);
+    this.registeredCapabilities.push(name);
   }
 
   private ensureOperation(
@@ -848,7 +868,7 @@ class SiYuanMasterKernelPlugin {
       "get_policy",
       genericToolConfig(
         "Get SiYuanMaster Access Boundary Policy",
-        "Call this before any SiYuan operation. Returns the notebook boundary, operation decisions, safety policy (snapshot, reference protection, long-document limits, block edit), optional tagging policy, and the accepted native MCP security boundary. Tool names are under plugin__siyuanmaster__* (technical plugin id siyuanmaster).",
+        "Call this before any SiYuan operation. Returns the notebook boundary, operation decisions, safety policy (snapshot, reference protection, long-document limits, block edit), optional tagging policy, and the accepted native MCP security boundary. SiYuan 3.8.1 exposes these Agent capabilities with the plugin__siyuanmaster__ prefix and a stable hash suffix.",
         {
           type: "object",
           properties: {},
@@ -861,8 +881,11 @@ class SiYuanMasterKernelPlugin {
           brand: "siyuanmaster",
           displayName: { default: "SiYuanMaster", "zh-CN": "思源大师" },
           technicalId: "siyuanmaster",
-          version: "0.6.0",
+          version: "0.6.1",
           namespace: "plugin__siyuanmaster__",
+          registrationApi: "siyuan.agent.registerCapability",
+          runtimeNamePattern:
+            "plugin__siyuanmaster__<local_name>__<stable_12_hex_hash>",
         },
         access: this.policy.access,
         operations: this.policy.operations,
@@ -880,7 +903,7 @@ class SiYuanMasterKernelPlugin {
           authorityLookup:
             "registered source/title/alias/type lookup before broad note search",
           originalToolsPreserved: 16,
-          totalTools: 27,
+          totalTools: 28,
           wikiTemplates:
             "versioned catalog + preview-only renderer + structure validator; no note writes",
           sourceIngestPlan:
@@ -2419,6 +2442,52 @@ class SiYuanMasterKernelPlugin {
             });
           },
         );
+      },
+    );
+  }
+
+  private async registerValidatePdfConversionTool(): Promise<void> {
+    await this.registerTool(
+      "validate_pdf_conversion",
+      genericToolConfig(
+        "Validate Externally Converted PDF Markdown",
+        "Read-only validation of Markdown produced outside the plugin. It never opens a local file, launches a converter, installs dependencies, uploads an asset, or writes a note.",
+        {
+          type: "object",
+          properties: {
+            converter: { type: "string", enum: [...PDF_CONVERTERS] },
+            converterVersion: { type: "string", maxLength: 128 },
+            markdown: { type: "string", maxLength: MAX_MARKDOWN_LENGTH },
+            profile: { type: "string", enum: [...PDF_TEXT_PROFILES] },
+            sourceSha256: { type: "string" },
+            minimumBoldSpans: { type: "number", minimum: 0, maximum: 100000 },
+            minimumExternalLinks: { type: "number", minimum: 0, maximum: 100000 },
+            minimumTables: { type: "number", minimum: 0, maximum: 100000 },
+            minimumCodeBlocks: { type: "number", minimum: 0, maximum: 100000 },
+            confirmed: confirmedProperty(),
+          },
+          required: ["converter", "markdown"],
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const markdown = stringInput(input.markdown, "markdown", { maxLength: MAX_MARKDOWN_LENGTH });
+        return this.runTool("validate_pdf_conversion", true, { confirmed, contentLength: markdown.length, preview: true }, async () => {
+          this.ensureOperation("read", confirmed);
+          return validatePdfConversion({
+            converter: enumInput(input.converter, "converter", PDF_CONVERTERS) as PdfConverter,
+            converterVersion: input.converterVersion === undefined ? undefined : stringInput(input.converterVersion, "converterVersion", { maxLength: 128 }).trim(),
+            markdown,
+            profile: input.profile === undefined ? undefined : enumInput(input.profile, "profile", PDF_TEXT_PROFILES) as PdfTextProfile,
+            sourceSha256: optionalSha256(input.sourceSha256),
+            minimumBoldSpans: optionalBoundedInteger(input.minimumBoldSpans, "minimumBoldSpans", 0, 100_000),
+            minimumExternalLinks: optionalBoundedInteger(input.minimumExternalLinks, "minimumExternalLinks", 0, 100_000),
+            minimumTables: optionalBoundedInteger(input.minimumTables, "minimumTables", 0, 100_000),
+            minimumCodeBlocks: optionalBoundedInteger(input.minimumCodeBlocks, "minimumCodeBlocks", 0, 100_000),
+          });
+        });
       },
     );
   }
