@@ -152,7 +152,10 @@ def span_markdown(span: dict, links: list[tuple[tuple[float, float, float, float
     if not text:
         return ""
     uri = link_for_span(tuple(span["bbox"]), links)
-    result = f"[{text}]({uri})" if uri else text
+    # Text spans are not a safe unit for a PDF annotation: a single link can
+    # cross several spans or start mid-URL. Preserve visible text here; a
+    # later reference-aware pass may create one complete Markdown link.
+    result = text
     font = span.get("font", "").lower()
     if span.get("flags", 0) & 16 or any(token in font for token in ("bold", "black", "heavy")):
         result = f"**{result}**"
