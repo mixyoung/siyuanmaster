@@ -25,7 +25,7 @@ COMPATIBILITY_GLYPHS = str.maketrans({"⻛": "风", "⻔": "门", "⻓": "长"})
 NUMBERED_HEADING = re.compile(r"^\d+\.\d+(?:\.\d+)?\s+")
 CHINESE_HEADING = re.compile(r"^[一二三四五六七八九十]+、")
 LIST_ITEM = re.compile(r"^\d+\.\s+")
-COMMAND = re.compile(r"^(?:/|npm\s|npx\s|claude\s|codex\s)")
+COMMAND = re.compile(r"^(?:/|!codex\s|npm\s|npx\s|claude\s|codex\s)")
 INLINE_LITERAL = re.compile(
     r"(?<![`A-Za-z0-9_./-])(?:AGENTS\.md|CLAUDE\.md|REQUIREMENTS\.md|\.codex/config\.toml|codex\.toml|sessionId|threadId|/codex:[a-z-]+(?:\s+--[a-z-]+)?|npm\s+(?:install|i)\s+-g\s+@openai/codex|codex\s+mcp-server|!codex|write_code|explain_code|debug_code|codex_completion|o4-mini|gpt-4\.1)(?![`A-Za-z0-9_./-])"
 )
@@ -381,11 +381,18 @@ def polish_chinese_technical(markdown: str) -> str:
             f"{index}. {entry}" for index, entry in enumerate(entries, 1)
         ) + "\n"
 
+
     pieces = re.split(r"(```.*?```)", markdown, flags=re.DOTALL)
     for index, piece in enumerate(pieces):
         if not piece.startswith("```"):
             pieces[index] = INLINE_LITERAL.sub(lambda match: f"`{match.group(0)}`", piece)
     polished = "".join(pieces)
+    polished = polished.replace("\u200b", "")
+    polished = re.sub(
+        r"\s*\*\*Confidence:\*\*\s*(High|Medium|Low)\b",
+        r"\n\n**Confidence:** \1",
+        polished,
+    )
     polished = re.sub(r"（\s+`", "（`", polished)
     return re.sub(r"`\s+）", "`）", polished)
 
