@@ -25,9 +25,11 @@ COMPATIBILITY_GLYPHS = str.maketrans({"⻛": "风", "⻔": "门", "⻓": "长"})
 NUMBERED_HEADING = re.compile(r"^\d+\.\d+(?:\.\d+)?\s+")
 CHINESE_HEADING = re.compile(r"^[一二三四五六七八九十]+、")
 LIST_ITEM = re.compile(r"^\d+\.\s+")
-COMMAND = re.compile(r"^(?:/|!codex\s|npm\s|npx\s|claude\s|codex\s)")
+COMMAND = re.compile(
+    r"^(?:/[a-z][a-z0-9:_-]*(?:\s|$)|![a-z][a-z0-9_-]*(?:\s|$)|(?:npm|npx)\s)"
+)
 INLINE_LITERAL = re.compile(
-    r"(?<![`A-Za-z0-9_./-])(?:AGENTS\.md|CLAUDE\.md|REQUIREMENTS\.md|\.codex/config\.toml|codex\.toml|sessionId|threadId|/codex:[a-z-]+(?:\s+--[a-z-]+)?|npm\s+(?:install|i)\s+-g\s+@openai/codex|codex\s+mcp-server|!codex|write_code|explain_code|debug_code|codex_completion|o4-mini|gpt-4\.1)(?![`A-Za-z0-9_./-])"
+    r"(?<![`A-Za-z0-9_./-])(?:[A-Z][A-Z0-9_-]{2,}\.md|\.[a-z0-9_-]+/config\.toml|[a-z][a-z0-9_-]*\.toml|(?:session|thread)[Ii]d|/[a-z][a-z0-9_-]*:[a-z-]+(?:\s+--[a-z-]+)?|npm\s+(?:install|i)\s+-g\s+@[a-z0-9_-]+/[a-z0-9_-]+|[a-z][a-z0-9_-]*\s+mcp-server|![a-z][a-z0-9_-]*|[a-z][a-z0-9_]*(?:_code|_completion)|[a-z][a-z0-9_-]*-[0-9]+(?:\.[0-9]+)+)(?![`A-Za-z0-9_./-])"
 )
 
 

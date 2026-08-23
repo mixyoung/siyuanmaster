@@ -13,7 +13,7 @@ SiYuanMaster is a native SiYuan plugin that lets trusted local AI assistants rea
 
 **Breaking change (0.5.0):** The technical plugin ID is now `siyuanmaster`. Install path is `data/plugins/siyuanmaster`; MCP tools are `plugin__siyuanmaster__*`. Previous `plugin__siyuan_agent_access__*` names are gone — **update external agent/skill configs manually**. On first load, policy/audit are **auto-copied** from `data/storage/petal/siyuan-agent-access/` into `data/storage/petal/siyuanmaster/` when the new side is missing (new always wins; fail-closed). The legacy petal directory is **kept and never deleted**.
 
-**Compatibility change (0.6.1):** SiYuan 3.8.1 removed the kernel plugin `siyuan.mcp.registerTool` surface. SiYuanMaster now registers all 27 controlled operations through `siyuan.agent.registerCapability` with conservative local read/write effects. Runtime model names keep the `plugin__siyuanmaster__` prefix and add SiYuan's stable 12-hex hash suffix; discover and call the exact names returned by `tools/list` rather than synthesizing the former unsuffixed names.
+**Compatibility change (0.6.1):** SiYuan 3.8.1 removed the kernel plugin `siyuan.mcp.registerTool` surface. SiYuanMaster now registers all 28 controlled operations through `siyuan.agent.registerCapability` with conservative local read/write effects. Runtime model names keep the `plugin__siyuanmaster__` prefix and add SiYuan's stable 12-hex hash suffix; discover and call the exact names returned by `tools/list` rather than synthesizing the former unsuffixed names.
 
 ## Overview
 
@@ -30,7 +30,7 @@ SiYuanMaster runs inside SiYuan as a desktop plugin. It registers policy-aware t
 
 - Sidebar: connection status, safety policy, and P1 capability status
 - GUI configuration for notebook access, operations, tagging, and write safety
-- **27** Agent capabilities exposed on `/mcp` (original 16 + 3 P1 + 8 knowledge-compounding M1): model names use `plugin__siyuanmaster__<name>__<stable-hash>`
+- **28** Agent capabilities exposed on `/mcp` (original 16 + 3 P1 + 9 knowledge/PDF validation capabilities): model names use `plugin__siyuanmaster__<name>__<stable-hash>`
 - Bounded document-tree browsing (`list_document_tree`; metadata only, never full bodies)
 - Path lookup (`resolve_document`, read-only), long-note windows (`read_note_segments`), block edit (`edit_block`)
 - Kernel-enforced notebook boundaries; notebook decisions apply to descendants
@@ -76,7 +76,7 @@ Recommended first calls:
 
 When policy requires confirmation, obtain user approval, then retry with `confirmed=true`. Never set `confirmed=true` without real approval.
 
-## Tools (27 = original 16 + 3 P1 + 8 knowledge-compounding M1)
+## Tools (28 = original 16 + 3 P1 + 9 knowledge/PDF validation capabilities)
 
 All tools are registered as Agent capabilities and exposed as `plugin__siyuanmaster__<name>__<stable-12-hex-hash>`. The catalog keeps the stable local names below; `tools/list` is authoritative for the full runtime name.
 
@@ -92,7 +92,7 @@ All tools are registered as Agent capabilities and exposed as `plugin__siyuanmas
 | `read_note_segments` | Outline + hard-capped full-block windows for long notes. Optional `includeStateHash=true` attaches a 64-char lowercase SHA-256 `stateHash` per **returned window** block from exact `getBlockKramdown` (not SQL text; never hashes the full document). Use those hashes as `edit_block.expectedHash`. |
 | `edit_block` | Exact block ID; `expectedContent` or `expectedHash`; reference impact; Safe Write Transaction (snapshot → confirm → recheck → execute once → readback; never retries a failed write). `validateOnly=true` runs the full preflight and returns `mode=validated` / `writeExecuted=false` without any write API (even if `confirmed=true`). Audit metadata sets `preview=true` for validateOnly and `preview=false` for a real edit (metadata only; no bodies/hashes). |
 
-**Knowledge-compounding M1 additions:**
+**Knowledge and PDF-validation additions:**
 
 | Tool | Role |
 |---|---|
@@ -103,6 +103,7 @@ All tools are registered as Agent capabilities and exposed as `plugin__siyuanmas
 | `list_wiki_templates` | Returns the version, purpose, creation gate, metadata enums, and ordered headings for all six Wiki page types |
 | `render_wiki_template` | Produces a deterministic Markdown draft preview with `writeExecuted=false`; never creates or updates a note |
 | `validate_wiki_template` | Checks title, required heading order/duplicates, and metadata without writing; additional H2 headings are warnings |
+| `validate_pdf_conversion` | Validates externally converted PDF Markdown for source fidelity signals without opening files, launching converters, installing dependencies, or writing notes |
 | `plan_source_ingest` | Turns one exact Raw source plus registry/discovery evidence, a caller-owned creation gate, and template choice into a read-only state and ordered workflow; listed mutations remain separately gated and are never executed by the plan tool |
 
 Structural tools `rename_note` / `move_note` use a two-step, one-time `previewToken`. Cross-notebook moves are a separate permission and are denied by default.
@@ -136,7 +137,7 @@ These are optional local helpers. They do not replace the TypeScript plugin path
 
 ## Verified on SiYuan 3.8.1 (local)
 
-Current 0.6.1 evidence from a real local SiYuan 3.8.1 instance:
+Historical pre-release 0.6.1 compatibility evidence from a real local SiYuan 3.8.1 instance, before `validate_pdf_conversion` became the 28th capability:
 
 - Safe install backed up 0.6.0, installed 13 files that exactly match `dist/`, and reloaded the plugin.
 - MCP `initialize` negotiated protocol **`2025-03-26`**.
@@ -144,7 +145,7 @@ Current 0.6.1 evidence from a real local SiYuan 3.8.1 instance:
 - Read smoke called the stable-hash `get_policy` and `list_accessible_notebooks` capabilities successfully; kernel RPC returned `ready=true` and `toolCount=27`.
 - The installed `kernel.js` contains the Agent registration/unregistration calls and no legacy `.mcp.registerTool(...)` call.
 
-This 3.8.1 compatibility acceptance did not run destructive note writes. The earlier 3.8.0-alpha.2 disposable-notebook evidence covered the full create/read/resolve/segments/edit/update/delete workflow, but it is historical evidence rather than a substitute for a future 3.8.1 write smoke. This is **not** a claim of full external-project parity (Bridge / Sisyphus) or of every tool combination under every policy.
+The current 28-capability release candidate is repository-tested but has not replaced that installed historical build. This 3.8.1 compatibility acceptance did not run destructive note writes. The earlier 3.8.0-alpha.2 disposable-notebook evidence covered the full create/read/resolve/segments/edit/update/delete workflow, but it is historical evidence rather than a substitute for a future 3.8.1 write smoke. This is **not** a claim of full external-project parity (Bridge / Sisyphus) or of every tool combination under every policy.
 
 ## Current limitations
 
@@ -165,7 +166,7 @@ cargo test --workspace
 
 ### MCP discovery smoke (optional)
 
-Requires a running local SiYuan and `SIYUAN_API_TOKEN`. Loopback only; the token is never printed. Reproduces SiYuan 3.8.1's stable capability-name hash, validates the exact 27 `plugin__siyuanmaster__*` names against `catalog/capabilities.json`, and asserts zero legacy `plugin__siyuan_agent_access__*` names.
+Requires a running local SiYuan and `SIYUAN_API_TOKEN`. Loopback only; the token is never printed. Reproduces SiYuan 3.8.1's stable capability-name hash, validates the exact 28 `plugin__siyuanmaster__*` names against `catalog/capabilities.json`, and asserts zero legacy `plugin__siyuan_agent_access__*` names.
 
 - **Default discovery:** zero note writes (initialize → session → tools/list + catalog match only).
 - **`--read-smoke`:** sequentially calls the two read-only tools `get_policy` and `list_accessible_notebooks`; prints only `isError`, whether `structuredContent` is present, top-level keys, and top-level array field names/counts — never array elements or values. These calls may write **metadata-only audit** entries.

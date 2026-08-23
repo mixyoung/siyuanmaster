@@ -326,7 +326,7 @@ Current 0.6.1 source status:
 - implemented and repository-tested: Source Manifest, Authority Registry, serialized registry writes, source identity de-duplication, bidirectional source/authority links, access-filtered `knowledge_status`, deterministic `find_wiki_candidates`, a versioned six-type bilingual Wiki template catalog with preview rendering and structural/metadata validation, and a read-only single-source Ingest state machine covering duplicate/review/already-ingested/update/select/fallback/gate/create/keep-Raw outcomes;
 - exposed tools: `register_knowledge_source`, `register_wiki_authority`, `knowledge_status`, `find_wiki_candidates`, `list_wiki_templates`, `render_wiki_template`, `validate_wiki_template`, and `plan_source_ingest`;
 - not yet implemented: Raw scanner, executable multi-step Ingest job, and Promote preview; and
-- proven on a live SiYuan 3.8.1 installation: all 27 Agent capabilities were discovered after safe backup/install/reload, and `get_policy` plus `list_accessible_notebooks` passed read-only smoke; not yet proven in this version: template/Ingest calls, registry persistence across reload, policy denial, or destructive write smoke. Do not infer those unrun gates from repository tests.
+- historical live SiYuan 3.8.1 evidence, captured before PDF conversion validation became the 28th capability: 27 Agent capabilities were discovered after safe backup/install/reload, and `get_policy` plus `list_accessible_notebooks` passed read-only smoke; not yet proven for the current 28-capability release candidate: live discovery, template/Ingest calls, registry persistence across reload, policy denial, or destructive write smoke. Do not infer those unrun gates from repository tests.
 
 ### Phase 2 — evidence and health
 

@@ -262,12 +262,12 @@ data/storage/petal/siyuanmaster/policy.json
 
 > 它是一个带有 MCP 工具提供能力的思源原生插件。
 
-它不是 Claude、Codex 或其他 Agent 平台的插件，也不是一个独立 MCP Server。
+它不是某个外部 Agent 平台的插件，也不是一个独立 MCP Server。
 
 需要区分思源中的两个方向：
 
 - `设置 → AI → MCP 服务器`：思源作为 MCP 客户端，连接外部 MCP Server，供思源内置 Agent 使用。
-- `http://127.0.0.1:6806/mcp`：思源作为 MCP Server，供 Codex、Claude、Cursor 等外部 Agent 连接。
+- `http://127.0.0.1:6806/mcp`：思源作为 MCP Server，供兼容 Streamable HTTP 的外部 Agent 连接。
 
 本插件使用第二条链路，把自己的受控工具注册到思源对外提供的 `/mcp` 中。
 
@@ -370,13 +370,7 @@ data/storage/petal/siyuanmaster/policy.json
 }
 ```
 
-不同 Agent 的配置字段可能不同，插件侧边栏应按客户端提供复制模板：
-
-- Codex
-- Claude Desktop / Claude Code
-- Cursor
-- OpenCode
-- 通用 Streamable HTTP
+不同 Agent 的配置字段可能不同，插件侧边栏只提供不绑定具体开发工具的通用 Streamable HTTP 配置模板。
 
 连接后的推荐调用顺序：
 
@@ -517,7 +511,7 @@ MVP 默认只支持本机访问，不自动开放公网。远程接入必须另�
 - MCP 连接状态和诊断。
 - 工具使用说明。
 - 配套 Skill。
-- Codex、Claude、Cursor 至少各完成一次真实调用验收。
+- 至少两类兼容 Streamable HTTP 的客户端完成真实调用验收。
 
 ### Phase 4：记忆沉淀
 

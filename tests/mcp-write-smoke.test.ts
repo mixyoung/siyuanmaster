@@ -41,7 +41,7 @@ const TECHNICAL_ID = "siyuanmaster";
 const PROTOCOL_VERSION = "2025-03-26";
 const FQ = (name: string) => buildAgentCapabilityToolName(TECHNICAL_ID, name);
 
-const CATALOG_27 = {
+const CATALOG_28 = {
   product: { technicalId: TECHNICAL_ID },
   namespaces: { plugin: PLUGIN_NS },
   pluginTools: [
@@ -59,6 +59,7 @@ const CATALOG_27 = {
     "list_wiki_templates",
     "render_wiki_template",
     "validate_wiki_template",
+    "validate_pdf_conversion",
     "plan_source_ingest",
     "create_note",
     "append_note",
@@ -80,9 +81,9 @@ const CATALOG_27 = {
   })),
 };
 
-const FQ_27 = CATALOG_27.pluginTools.map((t) => FQ(t.name));
+const FQ_28 = CATALOG_28.pluginTools.map((t) => FQ(t.name));
 const BARE_BY_FQ = new Map(
-  CATALOG_27.pluginTools.map((t) => [FQ(t.name), t.name]),
+  CATALOG_28.pluginTools.map((t) => [FQ(t.name), t.name]),
 );
 
 // Strict SiYuan ids: /^\d{14}-[a-z0-9]{7}$/ (7-char suffix)
@@ -453,7 +454,7 @@ function makeWriteFetch(opts: WriteFetchOpts = {}) {
       return jsonResponse({
         jsonrpc: "2.0",
         id: body.id,
-        result: { tools: FQ_27.map((name) => ({ name })) },
+        result: { tools: FQ_28.map((name) => ({ name })) },
       });
     }
     if (body.method === "tools/call") {
@@ -1255,7 +1256,7 @@ async function runWrite(
     url: URL,
     notebookId: NOTEBOOK_ID,
     confirmDestructiveSmoke: true,
-    catalog: CATALOG_27,
+    catalog: CATALOG_28,
     fetchImpl,
     log: (line: string) => logs.push(line),
     identityFactory: () => ({ title: TITLE, bodyMarker: BODY_MARKER }),
@@ -2311,7 +2312,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: NOTEBOOK_ID,
         confirmDestructiveSmoke: false,
-        catalog: CATALOG_27,
+        catalog: CATALOG_28,
         fetchImpl: makeWriteFetch() as typeof fetch,
         log: silent,
       }),
@@ -2334,7 +2335,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: "not-valid-id",
         confirmDestructiveSmoke: true,
-        catalog: CATALOG_27,
+        catalog: CATALOG_28,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
       }),
@@ -2996,7 +2997,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: NOTEBOOK_ID,
         confirmDestructiveSmoke: true,
-        catalog: CATALOG_27,
+        catalog: CATALOG_28,
         fetchImpl: makeWriteFetch({
           capture,
           failTool: "update_note",
@@ -3060,7 +3061,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: NOTEBOOK_ID,
         confirmDestructiveSmoke: true,
-        catalog: CATALOG_27,
+        catalog: CATALOG_28,
         fetchImpl: makeWriteFetch({
           capture,
           deleteResult: "fail-once-then-ok",
@@ -3107,7 +3108,7 @@ describe("mcp-write-smoke orchestration", () => {
         url: URL,
         notebookId: NOTEBOOK_ID,
         confirmDestructiveSmoke: true,
-        catalog: CATALOG_27,
+        catalog: CATALOG_28,
         fetchImpl: makeWriteFetch({
           capture,
           deleteResult: "ok-false",

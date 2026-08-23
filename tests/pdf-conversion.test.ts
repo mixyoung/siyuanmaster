@@ -6,15 +6,15 @@ import {
 
 const GOOD_MARKDOWN = `## Heading
 
-中文说明：在 Claude Code 中使用 \`AGENTS.md\`。
+中文说明：在某本机 Agent 中使用 \`INTERNAL.md\`。
 
 \`\`\`bash
-/codex:review
+/agent:review
 \`\`\`
 
 | 命令 | 功能 |
 | --- | --- |
-| \`/codex:review\` | 审查 |
+| \`/agent:review\` | 审查 |
 
 **Important** [Official source](https://example.com/source)
 
@@ -72,7 +72,7 @@ describe("PDF conversion validation", () => {
     const result = validatePdfConversion({
       converter: "external",
       markdown:
-        "Warning: truncated output\n<!-- source -->\n[AGENTS.md](http://agents.md/)\n中文,文本， 有空格",
+        "Warning: truncated output\n<!-- source -->\n[INTERNAL.md](http://internal.md/)\n中文,文本， 有空格",
       profile: "zh-technical",
     });
     expect(result.valid).toBe(false);

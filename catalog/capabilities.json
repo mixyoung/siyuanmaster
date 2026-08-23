@@ -284,6 +284,6 @@
   "compatibility": {
     "originalToolCount": 16,
     "technicalIdPolicy": "siyuanmaster-with-storage-migration",
-    "note": "0.6.1 targets SiYuan 3.8.1 and registers the 27 controlled tools through siyuan.agent.registerCapability. Agent model names retain the plugin__siyuanmaster__ prefix and add SiYuan's stable hash suffix. On first load, policy/audit are auto-copied from data/storage/petal/siyuan-agent-access/ into data/storage/petal/siyuanmaster/ when the new side is missing (new always wins; fail-closed defaults; migration marker for idempotency). The legacy petal directory is retained and never deleted."
+    "note": "0.6.1 targets SiYuan 3.8.1 and registers 28 controlled tools through siyuan.agent.registerCapability, including read-only PDF conversion validation. Agent model names retain the plugin__siyuanmaster__ prefix and add SiYuan's stable hash suffix. On first load, policy/audit are auto-copied from data/storage/petal/siyuan-agent-access/ into data/storage/petal/siyuanmaster/ when the new side is missing (new always wins; fail-closed defaults; migration marker for idempotency). The legacy petal directory is retained and never deleted."
   }
 }

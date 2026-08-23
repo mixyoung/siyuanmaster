@@ -7,7 +7,7 @@
 > - 当前开发版本：0.6.1（知识复利 M1 + 思源 3.8.1 Agent capability 兼容层；实机验收进行中）
 > - 编写日期：2026-08-12
 > - 一致性声明：本文档描述**本仓库当前实际实现**。所有“已实现”条目均可在仓库中找到对应代码与测试；已在思源实机验证的路径单独标注证据；其余“未接入”或“未在思源实机验证”的行为均如实标注，不冒充已实现。**不宣称**与外部参考项目（Bridge / Sisyphus）功能全量对等。
-> - 专项路线：知识复利产品线、SiYuan + LLM 与成熟 Obsidian/VS Code + LLM 实现的差距及分阶段验收标准，见 [《SiYuanMaster 知识复利产品路线与能力差距基线》](knowledge-compounding-product-roadmap.zh-CN.md)。专项路线只描述计划，不改变本文的“当前已实现”口径。
+> - 专项路线：知识复利产品线、SiYuan + LLM 与成熟知识工具 + LLM 实现的差距及分阶段验收标准，见 [《SiYuanMaster 知识复利产品路线与能力差距基线》](knowledge-compounding-product-roadmap.zh-CN.md)。专项路线只描述计划，不改变本文的“当前已实现”口径。
 
 ---
 
@@ -68,7 +68,7 @@
 | 笔记本级访问控制 | 已实现：允许/禁止名单 + 操作级 allow/confirm/deny | P0 |
 | 文档级读写/只读/隐藏 + 最近祖先继承 | **未接入 TS 插件**（Rust `core::perm` 有原语与单测） | 缺口 / P2 |
 | 多工作区 / 个性化指令与索引 | 未实现 | P2 / backlog |
-| 低上下文聚合工具（14 工具 / 100+ 能力） | 未采用；本产品为显式 27 工具契约 | 不目标对等 |
+| 低上下文聚合工具（14 工具 / 100+ 能力） | 未采用；本产品为显式 28 工具契约 | 不目标对等 |
 | HTTP/stdio 远程 / Docker | 网关仅本机最小可用；远程/Docker 未实现 | P2 登记 |
 | 官方插件 MCP 发现与转发 | 未实现；且转发可能绕过权限——非当前方向 | backlog |
 | 人类可读 fs 路径写操作 | 仅只读 `resolve_document`；写入仍要求精确 ID | P1 只读侧 |
@@ -115,7 +115,7 @@
 
 ### 2.3 工具集合
 
-27 个裸工具名 = 原 16 + `resolve_document` + `read_note_segments` + `edit_block` + `register_knowledge_source` + `register_wiki_authority` + `knowledge_status` + `find_wiki_candidates` + `list_wiki_templates` + `render_wiki_template` + `validate_wiki_template` + `plan_source_ingest`。全部只生成当前 `plugin__siyuanmaster__` 前缀下的 Agent capability 模型名，并由思源 3.8.1 追加稳定哈希。
+28 个裸工具名 = 原 16 + `resolve_document` + `read_note_segments` + `edit_block` + `register_knowledge_source` + `register_wiki_authority` + `knowledge_status` + `find_wiki_candidates` + `list_wiki_templates` + `render_wiki_template` + `validate_wiki_template` + `validate_pdf_conversion` + `plan_source_ingest`。全部只生成当前 `plugin__siyuanmaster__` 前缀下的 Agent capability 模型名，并由思源 3.8.1 追加稳定哈希。
 
 ---
 
@@ -245,7 +245,7 @@ catalog/capabilities.json
 - `pnpm build` **必须**执行 catalog check
 - 只声明当前技术命名空间；不声明 `legacyPlugin` 双命名空间
 
-工具 27 个（见 §2.3）。事务名：`SafeWriteTxn`。Wiki 模板另以 `catalog/wiki-templates.json` 为语义事实源，由生成脚本固化进 TS 内核，并受 freshness test 约束。
+工具 28 个（见 §2.3）。事务名：`SafeWriteTxn`。Wiki 模板另以 `catalog/wiki-templates.json` 为语义事实源，由生成脚本固化进 TS 内核，并受 freshness test 约束。
 
 ---
 
@@ -279,9 +279,9 @@ catalog/capabilities.json
 | `plan_source_ingest` | 只读预演；读取精确 Raw 与注册表元数据，输出重复/复核/已摄取/更新/候选/回退/创建门槛/新建/保留 Raw 状态、有序操作计划及结构化影响摘要；不读正文、不执行写入，`readyForWorkflow` 也不代表写授权。 |
 | `update_note` | 同上：快照/确认/复核/回读；**无**跨调用 preview token；**无**用户可见全量 diff |
 
-### 10.1 思源 3.8.1 实机证据（已确认）
+### 10.1 思源 3.8.1 历史实机证据（加入 PDF 校验能力前）
 
-当前 0.6.1 在**真实本地思源 3.8.1** 实例上已确认：
+加入第 28 项 `validate_pdf_conversion` 之前，0.6.1 兼容性构建在**真实本地思源 3.8.1** 实例上已确认：
 
 1. MCP `initialize` 协商协议 **`2025-03-26`**
 2. `tools/list` **总计 58** 项，其中 **27** 项 `plugin__siyuanmaster__*` Agent capability、**0** 项旧命名空间、31 项思源其他工具
@@ -289,7 +289,7 @@ catalog/capabilities.json
 4. kernel RPC 返回 `ready=true`、`toolCount=27`；安装目录 13 个文件与 `dist/` 逐项 SHA-256 一致
 5. 安全安装流程保留 0.6.0 备份；最新日志显示 27 项 Agent capability 已加载且无新的 `onload` 错误
 
-本次 3.8.1 兼容性验收未执行破坏性写烟测。此前 3.8.0-alpha.2 可弃笔记本上的完整 create/read/resolve/segments/edit/update/delete 流程只作为历史证据。**仍未宣称实机验证**（见 §13）：3.8.1 写入全流程、非空块引用场景、超长文档性能/排序、GUI 视觉行为、网关出站链路；**不**宣称 Bridge / Sisyphus 功能全量对等。
+当前 28 项能力发布候选已通过仓库门禁，但尚未替换上述历史安装。本次 3.8.1 兼容性验收未执行破坏性写烟测。此前 3.8.0-alpha.2 可弃笔记本上的完整 create/read/resolve/segments/edit/update/delete 流程只作为历史证据。**仍未宣称实机验证**（见 §13）：当前 28 项实机发现、3.8.1 写入全流程、非空块引用场景、超长文档性能/排序、GUI 视觉行为、网关出站链路；**不**宣称 Bridge / Sisyphus 功能全量对等。
 
 ---
 
@@ -324,7 +324,7 @@ catalog/capabilities.json
 - `cargo clippy --workspace -- -D warnings`
 - `cargo test --workspace`
 
-Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`mergeTags` 不覆盖、未来迁移决策、事务快照失败/状态漂移/unknown 不重试/回读、长文窗口、路径只读、引用保护、能力与模板目录新鲜度、27 工具含原 16、知识注册表并发/去重/双向引用/权限过滤/状态/候选排序、六类模板双语渲染/结构校验，以及单来源 Ingest 的 17 类边界与状态迁移。
+Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`mergeTags` 不覆盖、未来迁移决策、事务快照失败/状态漂移/unknown 不重试/回读、长文窗口、路径只读、引用保护、能力与模板目录新鲜度、28 工具含原 16、PDF 转换结果校验、知识注册表并发/去重/双向引用/权限过滤/状态/候选排序、六类模板双语渲染/结构校验，以及单来源 Ingest 的 17 类边界与状态迁移。
 
 ---
 
@@ -332,7 +332,7 @@ Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`me
 
 ### 13.1 已在真实思源 3.8.1 本地实例确认
 
-见 §10.1。0.6.1 已完成安全安装/备份/重载；协议协商 `2025-03-26`；`tools/list` 58 = 27 插件 Agent capability + 0 遗留 + 31 其他；两个必需只读能力与 RPC 状态通过。3.8.1 破坏性写入、模板/Ingest 预演调用、注册表持久化和权限拒绝场景仍需单独授权取证。
+见 §10.1。加入 PDF 校验能力前的 0.6.1 已完成安全安装/备份/重载；协议协商 `2025-03-26`；`tools/list` 58 = 27 插件 Agent capability + 0 遗留 + 31 其他；两个必需只读能力与 RPC 状态通过。当前 28 项发布候选的实机发现、3.8.1 破坏性写入、模板/Ingest 预演调用、注册表持久化和权限拒绝场景仍需单独授权取证。
 
 ### 13.2 仍有代码/单测但未（或仅部分）实机验证
 
@@ -369,5 +369,5 @@ Vitest 覆盖：安全策略默认与 normalize（含强制 true 归一）、`me
 - 规格版本：1.4
 - 插件包：`package.zip`（技术目录名 `siyuanmaster`）
 - 规格：本文档
-- 不提交密钥；`.gitignore` 含 `target/`、`.umadev/`、`output/`；保留 `Cargo.lock` 与生产规格
+- 不提交密钥；`.gitignore` 仅保留构建产物和本地输出目录；保留 `Cargo.lock` 与生产规格
 - 交付边界声明：P0/P1 **不是** Bridge/Sisyphus 全量功能对等；营销与 README 不得声称“已吸收全部功能”

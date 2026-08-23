@@ -10,7 +10,7 @@
 // - Token only from SIYUAN_API_TOKEN; never printed
 // - Fail closed on HTTP, JSON-RPC error, or result.isError
 // - Errors never include raw HTTP/SSE/JSON-RPC body text or fragments
-// - Exact catalog match for 27 SiYuan 3.8.1 Agent capability tool names;
+// - Exact catalog match for 28 SiYuan 3.8.1 Agent capability tool names;
 //   plugin__siyuanmaster__* prefix, stable hash suffix, legacy count = 0
 //
 // Default discovery: zero note writes.
@@ -26,7 +26,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_MCP_URL = "http://127.0.0.1:6806/mcp";
 const DEFAULT_TIMEOUT_MS = 10_000;
-const EXPECTED_PLUGIN_TOOL_COUNT = 27;
+const EXPECTED_PLUGIN_TOOL_COUNT = 28;
 const MAX_AGENT_CAPABILITY_TOOL_NAME_LENGTH = 64;
 const LEGACY_NAMESPACE = "plugin__siyuan_agent_access__";
 const CLIENT_INFO = {

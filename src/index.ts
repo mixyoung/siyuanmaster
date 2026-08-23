@@ -713,7 +713,7 @@ export default class SiYuanMasterPlugin extends Plugin {
                 </div>
                 <div class="sym-ledger__row">
                   <span>工具总数</span>
-                  <strong>27（含原 16）</strong>
+                  <strong>28（含原 16）</strong>
                 </div>
                 <div class="sym-ledger__row">
                   <span>命名空间</span>

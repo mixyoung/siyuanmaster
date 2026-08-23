@@ -13,7 +13,7 @@
 
 **Breaking change（0.5.0）：** 技术插件 ID 已切换为 `siyuanmaster`。安装目录为 `data/plugins/siyuanmaster`；MCP 工具全名为 `plugin__siyuanmaster__*`。旧的 `plugin__siyuan_agent_access__*` 名称失效，外部 Agent/Skill 配置必须更新。首次加载时，若新路径无策略/审计，会**自动复制**旧 petal（`data/storage/petal/siyuan-agent-access/`）到 `data/storage/petal/siyuanmaster/`（新值始终优先、失败关闭）；**旧目录保留不删**。外部 Agent/Skill 的 MCP 命名空间仍须**手工**改为 `plugin__siyuanmaster__*`。
 
-**兼容性变更（0.6.1）：** 思源 3.8.1 已移除内核插件的 `siyuan.mcp.registerTool` 接口。思源大师现通过 `siyuan.agent.registerCapability` 注册全部 27 项受控操作，并保守声明本地读写副作用。运行时模型名保留 `plugin__siyuanmaster__` 前缀，并追加思源生成的稳定 12 位十六进制哈希；应调用 `tools/list` 返回的精确名称，不再拼接旧的无后缀名称。
+**兼容性变更（0.6.1）：** 思源 3.8.1 已移除内核插件的 `siyuan.mcp.registerTool` 接口。思源大师现通过 `siyuan.agent.registerCapability` 注册全部 28 项受控操作，并保守声明本地读写副作用。运行时模型名保留 `plugin__siyuanmaster__` 前缀，并追加思源生成的稳定 12 位十六进制哈希；应调用 `tools/list` 返回的精确名称，不再拼接旧的无后缀名称。
 
 ## 概述
 
@@ -30,7 +30,7 @@
 
 - 侧边栏：连接状态、安全策略与 P1 能力状态
 - GUI 配置笔记本访问、操作权限、标签策略与写入安全策略
-- 在 `/mcp` 上暴露 **27** 项 Agent capability（原 16 + 3 个 P1 + 8 个知识复利 M1）；模型名格式为 `plugin__siyuanmaster__<name>__<稳定哈希>`
+- 在 `/mcp` 上暴露 **28** 项 Agent capability（原 16 + 3 个 P1 + 9 个知识/PDF 校验能力）；模型名格式为 `plugin__siyuanmaster__<name>__<稳定哈希>`
 - 有界文档树浏览（`list_document_tree`；仅元数据，不返回正文）
 - 路径查找（`resolve_document`，只读）、长文窗口（`read_note_segments`）、块编辑（`edit_block`）
 - 内核强制笔记本边界；笔记本决策下沉到全部子孙
@@ -76,7 +76,7 @@
 
 当策略要求确认时，须先获得用户同意，再带 `confirmed=true` 重试。未获真实确认时不得设置 `confirmed=true`。
 
-## 工具（27 = 原 16 + 3 个 P1 + 8 个知识复利 M1）
+## 工具（28 = 原 16 + 3 个 P1 + 9 个知识/PDF 校验能力）
 
 全部通过 Agent capability 注册，运行时暴露为 `plugin__siyuanmaster__<name>__<稳定12位十六进制哈希>`。下列目录保留稳定裸名；完整运行时名称以 `tools/list` 为准。
 
@@ -92,7 +92,7 @@
 | `read_note_segments` | 大纲 + 硬上限全块窗口，适合长文 |
 | `edit_block` | 精确块 ID、期望内容/哈希、引用影响、Safe Write Transaction |
 
-**知识复利 M1 新增：**
+**知识与 PDF 校验新增：**
 
 | 工具 | 作用 |
 |---|---|
@@ -103,6 +103,7 @@
 | `list_wiki_templates` | 返回六类 Wiki 页的版本、用途、创建门槛、元数据枚举与固定标题顺序 |
 | `render_wiki_template` | 只生成确定性 Markdown 草稿预览；明确返回 `writeExecuted=false`，不创建或更新笔记 |
 | `validate_wiki_template` | 只检查标题、必需章节顺序/重复和元数据；不写笔记，额外二级标题仅警告 |
+| `validate_pdf_conversion` | 只校验外部 PDF 转换结果的来源保真信号；不打开本地文件、不启动转换器、不安装依赖、不写笔记 |
 | `plan_source_ingest` | 将一条精确 Raw、注册表/候选证据、创建门槛和模板选择编排成只读状态与有序操作计划；计划中的写入仍需后续逐项授权，工具本身不执行写入 |
 
 结构类工具 `rename_note` / `move_note` 使用两阶段、一次性 `previewToken`。跨笔记本移动为独立权限，默认拒绝。
@@ -136,7 +137,7 @@ Safe Write Transaction（`update_note`、`edit_block`）：写前快照（失败
 
 ## 思源 3.8.1 实机验证
 
-当前 0.6.1 已在真实本机思源 3.8.1 上验证：
+以下是加入第 28 项 `validate_pdf_conversion` 之前，0.6.1 兼容性构建在真实本机思源 3.8.1 上的历史验证：
 
 - 安全安装流程备份 0.6.0，安装与 `dist/` 逐项一致的 13 个文件并完成重载；
 - MCP `initialize` 协商协议为 **`2025-03-26`**；
@@ -144,7 +145,7 @@ Safe Write Transaction（`update_note`、`edit_block`）：写前快照（失败
 - 带稳定哈希的 `get_policy`、`list_accessible_notebooks` 只读冒烟成功；kernel RPC 返回 `ready=true`、`toolCount=27`；
 - 已安装 `kernel.js` 存在 Agent 注册/注销调用，不存在旧 `.mcp.registerTool(...)` 调用。
 
-本次 3.8.1 兼容性验收未执行破坏性笔记写入。此前 3.8.0-alpha.2 可弃笔记本上的 create/read/resolve/segments/edit/update/delete 全流程属于历史证据，不能替代未来单独执行的 3.8.1 写入冒烟。
+当前 28 项能力的发布候选已通过仓库门禁，但尚未替换上述历史安装。本次 3.8.1 兼容性验收未执行破坏性笔记写入。此前 3.8.0-alpha.2 可弃笔记本上的 create/read/resolve/segments/edit/update/delete 全流程属于历史证据，不能替代未来单独执行的 3.8.1 写入冒烟。
 
 ## 当前限制
 
@@ -165,7 +166,7 @@ cargo test --workspace
 
 ### MCP 发现冒烟（可选）
 
-需要本机思源已运行且设置 `SIYUAN_API_TOKEN`。仅 loopback；Token 从不打印。脚本复现思源 3.8.1 的稳定 capability 名称哈希，按 `catalog/capabilities.json` 精确校验 27 个 `plugin__siyuanmaster__*` 名称，并断言旧命名空间 `plugin__siyuan_agent_access__*` 为 0。
+需要本机思源已运行且设置 `SIYUAN_API_TOKEN`。仅 loopback；Token 从不打印。脚本复现思源 3.8.1 的稳定 capability 名称哈希，按 `catalog/capabilities.json` 精确校验 28 个 `plugin__siyuanmaster__*` 名称，并断言旧命名空间 `plugin__siyuan_agent_access__*` 为 0。
 
 - **默认 discovery：** 零笔记写入（仅 initialize → session → tools/list + 目录精确匹配）。
 - **`--read-smoke`：** 依次调用两个只读工具 `get_policy` 与 `list_accessible_notebooks`；仅输出 `isError`、`structuredContent` 是否存在、顶层 key，以及顶层数组字段的名称与计数——绝不输出数组元素/值。这两次调用可能写入**仅元数据**审计记录。

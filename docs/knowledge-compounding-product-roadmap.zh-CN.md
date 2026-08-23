@@ -1,13 +1,13 @@
 # SiYuanMaster 知识复利产品路线与能力差距基线
 
-> 状态：持续实现中；M1 确定性注册表、模板与单来源 Ingest 预演已进入 0.6.1；思源 3.8.1 已完成27项能力发现与必需只读冒烟，M1 专项写入/持久化场景仍待验收
+> 状态：持续实现中；M1 确定性注册表、模板、PDF 结果校验与单来源 Ingest 预演已进入 0.6.1；思源 3.8.1 已完成早期 27 项能力发现与必需只读冒烟，当前 28 项发布候选及 M1 专项写入/持久化场景仍待实机验收
 > 基线日期：2026-08-12
 > 当前开发版本：SiYuanMaster 0.6.1；实机发现/只读基线为思源 3.8.1
 > 适用范围：思源笔记 + 外部 LLM Agent + SiYuanMaster 受控工具
 
 ## 1. 结论
 
-思源笔记能够承载 Karpathy LLM Wiki 的核心模式。SiYuanMaster 0.6.0 源码已经补上 Source Manifest、Authority Registry、确定性状态统计、低上下文候选查找、版本化模板目录、预览渲染和结构校验，以及只读单来源 Ingest 状态机，但仍没有达到成熟 Obsidian/VS Code 实现的“一键知识复利产品体验”。
+思源笔记能够承载 Karpathy LLM Wiki 的核心模式。SiYuanMaster 0.6.0 源码已经补上 Source Manifest、Authority Registry、确定性状态统计、低上下文候选查找、版本化模板目录、预览渲染和结构校验，以及只读单来源 Ingest 状态机，但仍没有达到成熟知识工具与 LLM 组合实现的“一键知识复利产品体验”。
 
 现在已经成立的是**安全受控的 Agent 读写底座与可执行 Skill 工作流**；仍需建设的是**确定性知识编译引擎和产品交互层**。正确路线不是把分类语义全部写死进插件，也不是让 LLM 在后台随意改库，而是：
 
@@ -25,7 +25,7 @@ LLM：在上述约束内完成语义提取、综合、比较、矛盾判断和�
 ### 2.1 方法来源
 
 - [Karpathy《LLM Wiki》原始提案](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)：Raw、Wiki、Schema 三层，以及 Ingest、Query、Lint 等持续编译思想。
-- [Microsoft LLM Wiki](https://github.com/microsoft/llmwiki)：VS Code 扩展与 MCP 实现，包含初始化、批量摄取、查询、状态、刷新、Raw 扫描、索引和健康能力。
+- [Microsoft LLM Wiki](https://github.com/microsoft/llmwiki)：编辑器扩展与 MCP 实现，包含初始化、批量摄取、查询、状态、刷新、Raw 扫描、索引和健康能力。
 - [green-dalii/obsidian-llm-wiki](https://github.com/green-dalii/obsidian-llm-wiki)：Obsidian 原生插件实现，包含一键摄取、文件夹批量、队列取消、实体/概念生成、重复检测、矛盾状态、Lint 和图检索。
 - [hsuanguo/llm-wiki](https://github.com/hsuanguo/llm-wiki)：Skill + CLI 实现，提供操作 playbook、页面模板、Raw 漂移检测和级联更新工作流。
 
@@ -49,7 +49,7 @@ LLM：在上述约束内完成语义提取、综合、比较、矛盾判断和�
 
 必须诚实区分：模板现在已有插件确定性基础，但语义填充和真实写入仍由 Agent 按 Skill 与独立授权完成；它还不是单来源一键 Ingest、任务队列或健康面板。
 
-## 3. SiYuan + LLM 相对成熟 Obsidian/VS Code + LLM 的差距
+## 3. SiYuan + LLM 相对成熟知识工具 + LLM 的差距
 
 | 能力 | 成熟实现的体验 | SiYuanMaster 0.6.0 开发现状 | 差距性质 | 目标 |
 |---|---|---|---|---|
@@ -134,7 +134,7 @@ Source Manifest ──→ Authority Registry
 - 已完成：Source Manifest、Authority Registry、六类版本化 Wiki 模板、只读 preview renderer/validator、单来源 Ingest 状态机，以及 `register_knowledge_source`、`register_wiki_authority`、`knowledge_status`、`find_wiki_candidates`、`list_wiki_templates`、`render_wiki_template`、`validate_wiki_template`、`plan_source_ingest`；
 - 已覆盖：串行化并发写、来源 ID/文档/哈希/URL 去重、双向引用、竞争权威页报告、访问范围过滤、确定性排序和空结果回退；
 - 尚未完成：`scanRaw`、可恢复的多步 Ingest 执行会话、Promote preview；
-- 已完成门禁：0.6.1 安装到真实思源 3.8.1，27 项 Agent capability 发现、`get_policy` / `list_accessible_notebooks` 只读调用与重载通过；尚未完成模板/Ingest 预演调用、登记/重复/权限拒绝及重载持久化专项烟测。
+- 已完成历史门禁：加入 PDF 校验能力前的 0.6.1 安装到真实思源 3.8.1，27 项 Agent capability 发现、`get_policy` / `list_accessible_notebooks` 只读调用与重载通过；尚未完成当前 28 项发布候选的实机发现，以及模板/Ingest 预演调用、登记/重复/权限拒绝及重载持久化专项烟测。
 
 验收：
 
