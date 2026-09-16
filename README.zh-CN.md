@@ -15,6 +15,14 @@
 
 **兼容性变更（0.6.1）：** 思源 3.8.1 已移除内核插件的 `siyuan.mcp.registerTool` 接口。思源大师现通过 `siyuan.agent.registerCapability` 注册全部 28 项受控操作，并保守声明本地读写副作用。运行时模型名保留 `plugin__siyuanmaster__` 前缀，并追加思源生成的稳定 12 位十六进制哈希；应调用 `tools/list` 返回的精确名称，不再拼接旧的无后缀名称。
 
+## 社区交流
+
+扫描下方二维码加入本项目所在的 SuperDev AI 社区交流群。微信群二维码如已过期，可添加图片中的微信联系人邀请入群。
+
+<p align="center">
+  <img src="./community-qr.png" alt="SuperDev AI 社区交流群二维码" width="1000">
+</p>
+
 ## 概述
 
 思源大师作为思源桌面端原生插件运行，向内置 `/mcp` 注册受策略约束的工具，提供侧边栏展示连接状态与安全策略，不额外启动 Node/Python 常驻服务。

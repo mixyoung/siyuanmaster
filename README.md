@@ -15,6 +15,14 @@ SiYuanMaster is a native SiYuan plugin that lets trusted local AI assistants rea
 
 **Compatibility change (0.6.1):** SiYuan 3.8.1 removed the kernel plugin `siyuan.mcp.registerTool` surface. SiYuanMaster now registers all 28 controlled operations through `siyuan.agent.registerCapability` with conservative local read/write effects. Runtime model names keep the `plugin__siyuanmaster__` prefix and add SiYuan's stable 12-hex hash suffix; discover and call the exact names returned by `tools/list` rather than synthesizing the former unsuffixed names.
 
+## Community
+
+Scan the QR codes below to join the SuperDev AI community for this project. If the WeChat group QR code has expired, add the WeChat contact shown in the image for an invitation.
+
+<p align="center">
+  <img src="./community-qr.png" alt="SuperDev AI community QR codes" width="1000">
+</p>
+
 ## Overview
 
 SiYuanMaster runs inside SiYuan as a desktop plugin. It registers policy-aware tools on SiYuan’s built-in `/mcp` endpoint, exposes a sidebar for connection status and safety policy, and does not start a separate Node or Python service.
