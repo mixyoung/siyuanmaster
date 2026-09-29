@@ -29,6 +29,7 @@ The native SiYuan MCP server may expose other administrator-level tools. Their p
 
 - Use `create_note`, `append_note`, or `update_note`.
 - `update_note` runs Safe Write Transaction (snapshot → confirm if required → state recheck → execute once → readback). On `state_changed` or `unknown`, stop and re-preview; never auto-retry uncertain outcomes.
+- If a write reports a readback mismatch after execution, treat the outcome as ambiguous and never retry automatically. Freshly re-read the note. SiYuan may normalize Markdown into Kramdown by changing table spacing, adding zero-width separators around inline code, or collapsing equivalent whitespace; accept the write only when canonicalized text, block structure, links, tags, and rendered meaning are unchanged. Otherwise stop and report the mismatch.
 - If the active operation decision is `confirm`, ask the user immediately before the write, then retry with `confirmed=true`.
 - `delete_note` always requires user confirmation and an exact `expectedTitle`.
 - Never set `confirmed=true` without actual user approval.
@@ -70,16 +71,7 @@ When `get_policy.capabilities.wikiTemplates` is available:
 
 If `wikiTemplates` is absent, use the templates in the reference directly and validate their structure manually. Do not call or invent unavailable template tools.
 
-When `get_policy.capabilities.pdfConversionValidation` is available and the user asks to convert a local PDF:
-
-- prefer Marker for complex/scanned PDFs that need rich layout recovery, or PyMuPDF4LLM for local digital PDFs; Pandoc is not a PDF-to-Markdown reader;
-- first probe whether the selected external converter is available. If it is absent, tell the user which converter is recommended and request explicit permission to install it; never silently install a dependency, runtime, or model;
-- when the user declines installation or the converter cannot run, use the bundled deterministic fallback. A multimodal model may be proposed for visual repair of a scan or complex layout, but it is never presumed exact and must be checked against the PDF text, annotations, and rich-feature acceptance criteria before any write;
-- run the external converter outside the plugin and call `validate_pdf_conversion` before any note write with the converter identity and grounded rich-feature minimums;
-- treat validation as metadata-only proof, never as conversion, upload, source registration, or write authorization; and
-- do not ask the plugin to install dependencies, download models, or execute an arbitrary local command.
-
-If `pdfConversionValidation` is absent, follow the same external-converter-first process and inspect rich features manually.
+For local PDF conversion without summarization, read [references/pdf-to-markdown.md](references/pdf-to-markdown.md) completely before acting. It governs converter choice, semantic block reconstruction, visual and rich-feature acceptance, and canonical readback comparison. Detect `validate_pdf_conversion` from the freshly discovered controlled tool list rather than relying only on `get_policy.capabilities.pdfConversionValidation`, because some installed versions or policy payloads omit that flag. This Skill remains authoritative for notebook access, write authorization, tagging, Safe Write Transaction, and uncertain-outcome handling.
 
 When `get_policy.capabilities.sourceIngestPlan` is available, use `plan_source_ingest` to keep one-source Ingest decisions explicit:
 
@@ -111,22 +103,6 @@ containers, or Wiki `Sources` sections:
   IDs or paths as external URLs; and
 - re-read the written note to verify both the displayed title and the actual
   link target.
-
-## Local PDF to Markdown fidelity
-
-When converting a local PDF into a Markdown note without summarization:
-
-- use a mature layout-aware converter for page order, headings, code, tables, bold spans, and link annotations; `scripts/pdf_to_markdown.py --engine pymupdf4llm` is a thin adapter for an already installed PyMuPDF4LLM environment and restores only verified PDF annotations, while its `fallback` engine remains a fallback/postprocessor; never vendor or auto-install a converter or model inside the Skill;
-- never put tool warnings, transport messages, or HTML comments (including provenance and page markers) in the note body; retain source path/hash only through separately authorized metadata or manifest storage;
-- reflow visual line wraps only inside the same paragraph, repair cross-line words and URLs, and preserve the source's actual headings and statements;
-- fence commands as code, reconstruct detected tables as Markdown tables instead of flattened prose, and never let code comments become document headings; and
-- preserve PDF bold spans and valid link annotations when the extractor exposes them. Do not infer links from nearby text; reject pseudo-links generated for file names and render those file names as inline code; and
-- for Chinese technical prose, preserve Chinese full-width punctuation; use one space between Chinese and English, Arabic numerals, or inline code, but never before Chinese punctuation. Keep official product spelling; use inline code only for exact commands, identifiers, paths, options, and file names; and
-- treat rich-feature counts as a screen, not visual acceptance. Before writing, render and compare at least the opening page, one code/table page, one dense list or multi-column page, and the first and final reference pages against rendered Markdown; and
-- repair from page evidence: font weight determines bold labels such as `适用场景：`, vertical gaps determine paragraph/list boundaries, table rectangles determine table boundaries, and annotation targets determine links. Do not flatten a visually separate list or run-on reference merely because text extraction joined it; and
-- audit bold by mapping every normalized bold PDF span to either a Markdown strong span or a heading, page by page; a total bold-count match alone is insufficient. Resolve and report every unmatched span before writing; and
-- make each source citation one list item. Apply a descriptive clickable title only after the target page title has been verified; and
-- before writing, check for visible comments, truncation text, unfenced commands, and flattened tables; after writing, re-read the first and final source page plus every code/table region.
 
 ## Offline webpage archive
 

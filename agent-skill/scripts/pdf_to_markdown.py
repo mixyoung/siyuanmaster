@@ -29,19 +29,28 @@ COMMAND = re.compile(
     r"^(?:/[a-z][a-z0-9:_-]*(?:\s|$)|![a-z][a-z0-9_-]*(?:\s|$)|(?:npm|npx)\s)"
 )
 INLINE_LITERAL = re.compile(
-    r"(?<![`A-Za-z0-9_./-])(?:[A-Z][A-Z0-9_-]{2,}\.md|\.[a-z0-9_-]+/config\.toml|[a-z][a-z0-9_-]*\.toml|(?:session|thread)[Ii]d|/[a-z][a-z0-9_-]*:[a-z-]+(?:\s+--[a-z-]+)?|npm\s+(?:install|i)\s+-g\s+@[a-z0-9_-]+/[a-z0-9_-]+|[a-z][a-z0-9_-]*\s+mcp-server|![a-z][a-z0-9_-]*|[a-z][a-z0-9_]*(?:_code|_completion)|[a-z][a-z0-9_-]*-[0-9]+(?:\.[0-9]+)+)(?![`A-Za-z0-9_./-])"
+    r"(?<![`A-Za-z0-9_./@-])(?:[A-Z][A-Z0-9_-]{2,}\.md|\.[a-z0-9_-]+/config\.toml|[a-z][a-z0-9_-]*\.toml|(?:session|thread)[Ii]d|/[a-z][a-z0-9_-]*:[a-z-]+(?:\s+--[a-z-]+)?|npm\s+(?:install|i)\s+-g\s+@[a-z0-9_-]+/[a-z0-9_-]+|[a-z][a-z0-9_-]*\s+mcp-server|![a-z][a-z0-9_-]*|[a-z][a-z0-9_]*(?:_code|_completion)|[a-z][a-z0-9_-]*-[0-9]+(?:\.[0-9]+)+|worker_done|merge_ready|@all|@builders|localhost:3000)(?![`A-Za-z0-9_/@-])(?!\.[\w-])"
+)
+# Common-English event words: wrapped as code only on lines that already
+# contain an unambiguous INLINE_LITERAL hit, so plain prose stays untouched.
+INLINE_LITERAL_CONTEXT = re.compile(
+    r"(?<![`A-Za-z0-9_./@-])(?:dispatch|escalation|websearch|clink)(?![`A-Za-z0-9_/@-])(?!\.[\w-])"
 )
 
 
 @dataclass(frozen=True)
 class Line:
     page: int
+    order: int
+    page_height: float
     x0: float
+    x1: float
     y0: float
     y1: float
     size: float
     text: str
     markdown: str
+    bullet_start: bool
 
 
 def normalize(text: str) -> str:
@@ -111,9 +120,15 @@ def linkify_annotation_urls(markdown: str, urls: list[str]) -> tuple[str, int]:
     annotation. Using the annotation list avoids inventing links from prose.
     """
     converted = 0
-    pieces = re.split(r"(```.*?```)", markdown, flags=re.DOTALL)
+    pieces = re.split(
+        r"(```.*?```|(?<!!)\[[^\]]+\]\([^)]+\))",
+        markdown,
+        flags=re.DOTALL,
+    )
     for index, piece in enumerate(pieces):
-        if piece.startswith("```"):
+        if piece.startswith("```") or re.fullmatch(
+            r"(?<!!)\[[^\]]+\]\([^)]+\)", piece
+        ):
             continue
         for uri in urls:
             pattern = wrapped_url_pattern(uri)
@@ -134,6 +149,9 @@ def conversion_metrics(markdown: str) -> dict[str, int | bool]:
     tables = re.findall(r"^\|?(?:\s*:?-{3,}:?\s*\|)+\s*$", markdown, re.MULTILINE)
     return {
         "boldSpans": markdown.count("**") // 2,
+        "headings": len(re.findall(r"^#{1,6}\s+", markdown, re.MULTILINE)),
+        "bulletItems": len(re.findall(r"^-\s+", markdown, re.MULTILINE)),
+        "numberedItems": len(re.findall(r"^\d+\.\s+", markdown, re.MULTILINE)),
         "externalLinks": len(external_links),
         "tables": len(tables),
         "codeFences": markdown.count("```") // 2,
@@ -141,47 +159,62 @@ def conversion_metrics(markdown: str) -> dict[str, int | bool]:
     }
 
 
-def link_for_span(span_bbox: tuple[float, float, float, float], links: list[tuple[tuple[float, float, float, float], str]]) -> str | None:
-    sx0, sy0, sx1, sy1 = span_bbox
-    for (lx0, ly0, lx1, ly1), uri in links:
-        if min(sx1, lx1) - max(sx0, lx0) > 0.5 and min(sy1, ly1) - max(sy0, ly0) > 0.5:
-            return uri
-    return None
-
-
-def span_markdown(span: dict, links: list[tuple[tuple[float, float, float, float], str]]) -> str:
+def span_markdown(span: dict) -> str:
     text = normalize(span.get("text", ""))
     if not text:
         return ""
-    uri = link_for_span(tuple(span["bbox"]), links)
     # Text spans are not a safe unit for a PDF annotation: a single link can
     # cross several spans or start mid-URL. Preserve visible text here; a
     # later reference-aware pass may create one complete Markdown link.
     result = text
     font = span.get("font", "").lower()
-    if span.get("flags", 0) & 16 or any(token in font for token in ("bold", "black", "heavy")):
+    if span.get("flags", 0) & 16 or any(
+        token in font for token in ("bold", "semibold", "demibold", "black", "heavy")
+    ):
         result = f"**{result}**"
     return result
 
 
-def join_text(parts: list[str]) -> str:
+def boundary_separator(previous: str, current: str) -> str:
+    """Choose spacing from visible text rather than Markdown delimiters."""
+    if not previous or not current:
+        return ""
+    left = previous[-1]
+    right = current[0]
+    if left == "-" and right.isalnum():
+        return ""
+    if right in "，。；：！？、（）【】《》“”‘’.,;:!?)]}\"'":
+        return ""
+    if left in "，。；：！？、（【《“‘\"'":
+        return ""
+    if is_cjk(left) and is_cjk(right):
+        return ""
+    if (is_cjk(left) and right.isalnum()) or (left.isalnum() and is_cjk(right)):
+        return " "
+    if left in "/":
+        return ""
+    return " "
+
+
+def join_rich(parts: list[tuple[str, str]]) -> str:
+    """Join wrapped text while keeping Markdown strong spans intact."""
     result = ""
-    for part in (normalize(item) for item in parts):
-        if not part:
+    previous_plain = ""
+    for plain, markdown in parts:
+        plain = normalize(plain)
+        markdown = markdown.strip()
+        if not plain or not markdown:
             continue
-        if not result:
-            result = part
-        elif result.endswith("-") and part[:1].isalnum():
-            result += part
-        elif is_cjk(result[-1]) and is_cjk(part[0]):
-            result += part
-        elif result.endswith(("，", "。", "；", "：", "！", "？", "）", "”", "、")):
-            result += part
-        elif result.endswith(("/", "—", "–")):
-            result += " " + part
-        else:
-            result += " " + part
+        if result:
+            result += boundary_separator(previous_plain, plain)
+        result += markdown
+        previous_plain = plain
     return result
+
+
+def join_text(parts: list[str]) -> str:
+    normalized = [normalize(item) for item in parts]
+    return join_rich([(item, item) for item in normalized if item])
 
 
 def table_markdown(table: object) -> str:
@@ -213,19 +246,80 @@ def table_rectangles(page: object) -> list[tuple[tuple[float, float, float, floa
 def overlaps_table(line: Line, rectangles: list[tuple[tuple[float, float, float, float], str]]) -> bool:
     for (x0, y0, x1, y1), _ in rectangles:
         vertical = min(line.y1, y1) - max(line.y0, y0)
-        horizontal = min(line.x0 + 9999, x1) - max(line.x0, x0)
+        horizontal = min(line.x1, x1) - max(line.x0, x0)
         if vertical > 0 and horizontal > 0:
             return True
     return False
 
 
+def bullet_markers(page: object) -> list[tuple[float, float]]:
+    """Return centers of small filled vector bullets omitted from PDF text."""
+    markers: list[tuple[float, float]] = []
+    for drawing in page.get_drawings():
+        rectangle = drawing.get("rect")
+        if rectangle is None or drawing.get("fill") is None:
+            continue
+        if not (2.0 <= rectangle.width <= 8.0 and 2.0 <= rectangle.height <= 8.0):
+            continue
+        if abs(rectangle.width - rectangle.height) > 1.5:
+            continue
+        markers.append(
+            (
+                (rectangle.x0 + rectangle.x1) / 2,
+                (rectangle.y0 + rectangle.y1) / 2,
+            )
+        )
+    return markers
+
+
+def source_pdf_metrics(pdf_path: Path) -> dict[str, int]:
+    document = pymupdf.open(pdf_path)
+    bold_spans = 0
+    vector_bullets = 0
+    external_links: set[str] = set()
+    for page_number, page in enumerate(document, 1):
+        vector_bullets += sum(
+            line.bullet_start for line in extract_lines(page, page_number)
+        )
+        external_links.update(
+            link["uri"]
+            for link in page.get_links()
+            if is_external_link(link.get("uri"))
+        )
+        for block in page.get_text("dict", sort=True).get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    font = span.get("font", "").lower()
+                    if span.get("flags", 0) & 16 or any(
+                        token in font
+                        for token in ("bold", "semibold", "demibold", "black", "heavy")
+                    ):
+                        if normalize(span.get("text", "")):
+                            bold_spans += 1
+    document.close()
+    return {
+        "sourceBoldSpans": bold_spans,
+        "sourceVectorBullets": vector_bullets,
+        "sourceExternalLinks": len(external_links),
+    }
+
+
+def aligns_with_bullet(
+    bbox: tuple[float, float, float, float], markers: list[tuple[float, float]]
+) -> bool:
+    x0, y0, _, y1 = bbox
+    return any(
+        4.0 <= x0 - marker_x <= 24.0 and y0 - 2.0 <= marker_y <= y1 + 2.0
+        for marker_x, marker_y in markers
+    )
+
+
 def extract_lines(page: object, page_number: int) -> list[Line]:
-    links = [
-        (tuple(link["from"]), link["uri"])
-        for link in page.get_links()
-        if is_external_link(link.get("uri"))
-    ]
+    markers = bullet_markers(page)
     result: list[Line] = []
+    source_order = 0
     for block in page.get_text("dict", sort=True).get("blocks", []):
         if block.get("type") != 0:
             continue
@@ -235,18 +329,28 @@ def extract_lines(page: object, page_number: int) -> list[Line]:
             if not text:
                 continue
             bbox = raw_line["bbox"]
-            markdown = "".join(span_markdown(span, links) for span in spans)
+            rich_spans = [
+                (normalize(span.get("text", "")), span_markdown(span))
+                for span in spans
+                if normalize(span.get("text", ""))
+            ]
+            markdown = join_rich(rich_spans)
             result.append(
                 Line(
                     page_number,
+                    source_order,
+                    float(page.rect.height),
                     bbox[0],
+                    bbox[2],
                     bbox[1],
                     bbox[3],
                     max((span.get("size", 0) for span in spans), default=0),
                     text,
                     markdown or text,
+                    aligns_with_bullet(tuple(bbox), markers),
                 )
             )
+            source_order += 1
     return sorted(result, key=lambda item: (item.y0, item.x0))
 
 
@@ -271,16 +375,57 @@ def starts_shell_block(lines: list[Line], index: int) -> bool:
     return probe > index and probe < len(lines) and COMMAND.match(lines[probe].text) is not None
 
 
+def paragraph_break(previous: Line, current: Line) -> bool:
+    """Detect semantic block gaps without treating every visual wrap as a break."""
+    if previous.page != current.page:
+        if re.search(r"[。！？.!?；;]$", previous.text) is None:
+            return False
+        usable_bottom = previous.page_height - 32.0
+        remaining = usable_bottom - previous.y1
+        required = max(previous.size, current.size) * 1.45
+        return remaining >= required
+    gap = current.y0 - previous.y1
+    threshold = max(8.0, min(previous.size, current.size) * 0.65)
+    return gap > threshold
+
+
+def join_lines(lines: list[Line]) -> str:
+    return join_rich([(line.text, line.markdown) for line in lines])
+
+
+def collect_wrapped_item(lines: list[Line], index: int) -> tuple[list[Line], int]:
+    """Collect continuation lines belonging to one bullet or numbered item."""
+    item = [lines[index]]
+    first = lines[index]
+    index += 1
+    while index < len(lines):
+        candidate = lines[index]
+        previous = item[-1]
+        if candidate.page != first.page:
+            break
+        if candidate.bullet_start or LIST_ITEM.match(candidate.text):
+            break
+        if heading_level(candidate.text, candidate.size) is not None:
+            break
+        if candidate.text.startswith("# ") or COMMAND.match(candidate.text):
+            break
+        if candidate.x0 + 1.0 < first.x0 or paragraph_break(previous, candidate):
+            break
+        item.append(candidate)
+        index += 1
+    return item, index
+
+
 def convert_fallback(pdf_path: Path) -> str:
     document = pymupdf.open(pdf_path)
     output: list[str] = []
-    paragraph: list[str] = []
+    paragraph: list[Line] = []
     previous: Line | None = None
 
     def flush_paragraph() -> None:
         nonlocal paragraph
         if paragraph:
-            output.append(join_text(paragraph))
+            output.append(join_lines(paragraph))
             paragraph = []
 
     for page_number, page in enumerate(document, 1):
@@ -303,15 +448,19 @@ def convert_fallback(pdf_path: Path) -> str:
 
             if starts_shell_block(lines, index):
                 flush_paragraph()
-                code: list[str] = []
+                code_lines: list[Line] = []
                 while index < len(lines):
                     candidate = lines[index]
                     if candidate.text.startswith("# ") or COMMAND.match(candidate.text):
-                        code.append(candidate.text)
+                        code_lines.append(candidate)
                         previous = candidate
                         index += 1
                     else:
                         break
+                code = [
+                    candidate.text
+                    for candidate in sorted(code_lines, key=lambda candidate: candidate.order)
+                ]
                 output.append("```bash\n" + "\n".join(code) + "\n```")
                 continue
 
@@ -323,16 +472,23 @@ def convert_fallback(pdf_path: Path) -> str:
                 index += 1
                 continue
 
-            if LIST_ITEM.match(line.text):
+            if line.bullet_start:
                 flush_paragraph()
-                paragraph.append(line.text)
-                previous = line
-                index += 1
+                item, index = collect_wrapped_item(lines, index)
+                output.append("- " + join_lines(item))
+                previous = item[-1]
                 continue
 
-            if previous and previous.page == line.page and line.y0 - previous.y1 > 22:
+            if LIST_ITEM.match(line.text):
                 flush_paragraph()
-            paragraph.append(line.markdown)
+                item, index = collect_wrapped_item(lines, index)
+                output.append(join_lines(item))
+                previous = item[-1]
+                continue
+
+            if previous and paragraph_break(previous, line):
+                flush_paragraph()
+            paragraph.append(line)
             previous = line
             index += 1
 
@@ -343,7 +499,10 @@ def convert_fallback(pdf_path: Path) -> str:
 
     flush_paragraph()
     document.close()
-    return "\n\n".join(part for part in output if part).strip() + "\n"
+    markdown = "\n\n".join(part for part in output if part).strip() + "\n"
+    markdown = re.sub(r"(?m)^(- .*)\n\n(?=- )", r"\1\n", markdown)
+    markdown = re.sub(r"(?m)^(\d+\. .*)\n\n(?=\d+\. )", r"\1\n", markdown)
+    return markdown
 
 
 def convert_pymupdf4llm(pdf_path: Path) -> tuple[str, dict[str, int | str | bool]]:
@@ -365,6 +524,27 @@ def convert_pymupdf4llm(pdf_path: Path) -> tuple[str, dict[str, int | str | bool
         "converterVersion": getattr(pymupdf4llm, "__version__", "unknown"),
         "annotationLinksLinkified": linkified,
     }
+
+
+def span_inline_literals(text: str) -> str:
+    """Wrap identifier tokens in backticks, line by line.
+
+    Unambiguous identifiers (commands, file names, compound or symbol-led
+    event tokens) are always wrapped. Everyday-English event words
+    (dispatch/escalation/websearch/clink) are wrapped only on lines that
+    already carry one of those identifiers, so ordinary prose keeps its
+    normal styling.
+    """
+    def wrap(match: re.Match[str]) -> str:
+        return f"`{match.group(0)}`"
+
+    wrapped_lines = []
+    for line in text.split("\n"):
+        wrapped = INLINE_LITERAL.sub(wrap, line)
+        if "`" in wrapped:
+            wrapped = INLINE_LITERAL_CONTEXT.sub(wrap, wrapped)
+        wrapped_lines.append(wrapped)
+    return "\n".join(wrapped_lines)
 
 
 def polish_chinese_technical(markdown: str) -> str:
@@ -390,11 +570,22 @@ def polish_chinese_technical(markdown: str) -> str:
     pieces = re.split(r"(```.*?```|`[^`\n]+`)", markdown, flags=re.DOTALL)
     for index, piece in enumerate(pieces):
         if not piece.startswith(("```", "`")):
-            pieces[index] = INLINE_LITERAL.sub(lambda match: f"`{match.group(0)}`", piece)
+            pieces[index] = span_inline_literals(piece)
             pieces[index] = re.sub(r"([\u4e00-\u9fff])([A-Za-z0-9])", r"\1 \2", pieces[index])
             pieces[index] = re.sub(r"([A-Za-z0-9])([\u4e00-\u9fff])", r"\1 \2", pieces[index])
     polished = "".join(pieces)
     polished = polished.replace("\u200b", "")
+    def extend_partial_list_label(match: re.Match[str]) -> str:
+        marker, prefix = match.group(1), match.group(2)
+        if "**" not in prefix:
+            return match.group(0)
+        return f"{marker}**{prefix.replace('**', '').strip()}：** "
+
+    polished = re.sub(
+        r"(?m)^(- |\d+\. )([^\n：]{1,60})：(?:\*\*)?",
+        extend_partial_list_label,
+        polished,
+    )
     polished = re.sub(
         r"\s*\*\*Confidence:\*\*\s*(High|Medium|Low)\b",
         r"\n\n**Confidence:** \1",
@@ -425,7 +616,14 @@ def main() -> int:
         markdown, details = convert_pymupdf4llm(args.pdf)
     else:
         markdown = convert_fallback(args.pdf)
-        details = {"converter": "fallback", "converterVersion": "bundled"}
+        markdown, linkified = linkify_annotation_urls(
+            markdown, annotation_urls(args.pdf)
+        )
+        details = {
+            "converter": "fallback",
+            "converterVersion": "bundled",
+            "annotationLinksLinkified": linkified,
+        }
     if args.polish_zh:
         markdown = polish_chinese_technical(markdown)
     if args.output:
@@ -439,6 +637,7 @@ def main() -> int:
             "sourceSha256": hashlib.sha256(source_bytes).hexdigest(),
             "engine": args.engine,
             **details,
+            **source_pdf_metrics(args.pdf),
             **conversion_metrics(markdown),
         }
         args.manifest.write_text(
