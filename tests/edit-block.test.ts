@@ -15,6 +15,7 @@ import {
 const BLOCK_ID = "20260101120200-blksmok";
 const DOC_ID = "20260101120100-docsmok";
 const NOTEBOOK_ID = "20240101120000-nbok001";
+const OTHER_NOTEBOOK_ID = "20240101120000-nbdeny";
 const KRAMDOWN = "paragraph marker body\n{: id=\"20260101120200-blksmok\"}";
 const REPLACEMENT = "replacement markdown";
 
@@ -24,7 +25,9 @@ function nodeSha256Hex(content: string): string {
 
 function basePolicy(
   overrides: Partial<EditBlockPolicySlice> = {},
+  allowedNotebooks: string[] = [NOTEBOOK_ID],
 ): EditBlockPolicySlice {
+  const allowed = new Set(allowedNotebooks);
   return {
     operations: { update: "allow", ...overrides.operations },
     safety: {
@@ -35,6 +38,11 @@ function basePolicy(
       },
       referenceProtection:
         overrides.safety?.referenceProtection ?? "warn",
+    },
+    access: {
+      isNotebookAllowed:
+        overrides.access?.isNotebookAllowed ??
+        ((notebookId: string) => allowed.has(notebookId)),
     },
   };
 }
@@ -65,7 +73,10 @@ function mockIo(
     vi.fn(async () => kramdown);
   const listReferencingBlocks =
     (overrides.listReferencingBlocks as ReturnType<typeof vi.fn> | undefined) ??
-    vi.fn(async () => overrides.refs ?? []);
+    vi.fn(async () => ({
+      referencing: overrides.refs ?? [],
+      dbTruncated: false,
+    }));
   const updateBlockMarkdown =
     (overrides.updateBlockMarkdown as ReturnType<typeof vi.fn> | undefined) ??
     vi.fn(async () => undefined);
@@ -347,6 +358,8 @@ describe("performEditBlock validateOnly", () => {
       referenceRisk: "none",
       referencingCount: 0,
       referencing: [],
+      hiddenReferencingCount: 0,
+      referencingTruncated: false,
     });
     expect(io.updateBlockMarkdown).not.toHaveBeenCalled();
     expect(io.runWriteTransaction).not.toHaveBeenCalled();
@@ -668,7 +681,10 @@ describe("performEditBlock production path with real runWriteTransaction", () =>
       executeCount += 1;
       store = afterWrite(markdown, id);
     });
-    const listReferencingBlocks = vi.fn(async () => []);
+    const listReferencingBlocks = vi.fn(async () => ({
+      referencing: [],
+      dbTruncated: false,
+    }));
 
     const io: EditBlockIo = {
       getBlockKramdown,
@@ -792,7 +808,7 @@ describe("performEditBlock production path with real runWriteTransaction", () =>
         }),
         fake.io,
       ),
-    ).rejects.toMatchObject({ code: "invalid_request" });
+    ).rejects.toMatchObject({ code: "verification_failed" });
     expect(fake.getExecuteCount()).toBe(1);
     expect(fake.updateBlockMarkdown).toHaveBeenCalledTimes(1);
   });
@@ -821,7 +837,7 @@ describe("performEditBlock production path with real runWriteTransaction", () =>
         }),
         fake.io,
       ),
-    ).rejects.toMatchObject({ code: "invalid_request" });
+    ).rejects.toMatchObject({ code: "verification_failed" });
     expect(fake.getExecuteCount()).toBe(1);
   });
 
@@ -849,7 +865,7 @@ describe("performEditBlock production path with real runWriteTransaction", () =>
         }),
         fake.io,
       ),
-    ).rejects.toMatchObject({ code: "invalid_request" });
+    ).rejects.toMatchObject({ code: "verification_failed" });
     expect(fake.getExecuteCount()).toBe(1);
   });
 
@@ -876,7 +892,247 @@ describe("performEditBlock production path with real runWriteTransaction", () =>
         }),
         fake.io,
       ),
-    ).rejects.toMatchObject({ code: "invalid_request" });
+    ).rejects.toMatchObject({ code: "verification_failed" });
     expect(fake.getExecuteCount()).toBe(1);
+  });
+});
+
+describe("performEditBlock access boundary over reference sources", () => {
+  const crossNotebookRefs = [
+    {
+      blockId: "20260101120300-refok01",
+      documentId: DOC_ID,
+      notebookId: NOTEBOOK_ID,
+      contentSnippet: "same-notebook reference snippet",
+    },
+    {
+      blockId: "20260101120300-refden1",
+      documentId: "20260101120100-docdeny",
+      notebookId: OTHER_NOTEBOOK_ID,
+      contentSnippet: "SECRET forbidden-notebook reference body",
+    },
+  ];
+
+  it("validateOnly hides inaccessible reference identities and snippets", async () => {
+    const result = await performEditBlock(
+      {
+        blockId: BLOCK_ID,
+        markdown: REPLACEMENT,
+        expectedHash: nodeSha256Hex(KRAMDOWN),
+        confirmed: false,
+        validateOnly: true,
+      },
+      context,
+      basePolicy(),
+      mockIo({ refs: crossNotebookRefs }),
+    );
+    expect(result.mode).toBe("validated");
+    if (result.mode !== "validated") {
+      return;
+    }
+    expect(result.referencingCount).toBe(2);
+    expect(result.hiddenReferencingCount).toBe(1);
+    expect(result.referencing).toHaveLength(1);
+    expect(result.referencing[0]!.notebookId).toBe(NOTEBOOK_ID);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(OTHER_NOTEBOOK_ID);
+    expect(serialized).not.toContain("refden1");
+    expect(serialized).not.toContain("SECRET forbidden-notebook");
+    expect(result.referenceRisk).toBe("critical");
+  });
+
+  it("committed result also hides inaccessible reference details", async () => {
+    const result = await performEditBlock(
+      {
+        blockId: BLOCK_ID,
+        markdown: REPLACEMENT,
+        expectedHash: nodeSha256Hex(KRAMDOWN),
+        confirmed: true,
+        validateOnly: false,
+      },
+      context,
+      basePolicy({
+        operations: { update: "allow" },
+        safety: {
+          blockEdit: { requireExpectedState: true, defaultConfirm: false },
+          referenceProtection: "warn",
+        },
+      }),
+      {
+        ...mockIo({ refs: crossNotebookRefs }),
+      },
+    );
+    expect(result.verified).toBe(true);
+    expect(result.hiddenReferencingCount).toBe(1);
+    expect(result.referencing).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain("SECRET forbidden-notebook");
+  });
+
+  it("deny mode still blocks on inaccessible references with count only", async () => {
+    await expect(
+      performEditBlock(
+        {
+          blockId: BLOCK_ID,
+          markdown: REPLACEMENT,
+          expectedHash: nodeSha256Hex(KRAMDOWN),
+          confirmed: true,
+          validateOnly: true,
+        },
+        context,
+        basePolicy({
+          safety: { referenceProtection: "deny" },
+        }),
+        mockIo({
+          refs: [
+            {
+              blockId: "20260101120300-refden2",
+              documentId: "20260101120100-docdeny",
+              notebookId: OTHER_NOTEBOOK_ID,
+              contentSnippet: "SECRET deny-mode forbidden body",
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "operation_denied",
+      message: expect.stringMatching(/referenced by 1 block/),
+    });
+  });
+
+  it("accessible cross-notebook references are returned in full", async () => {
+    const result = await performEditBlock(
+      {
+        blockId: BLOCK_ID,
+        markdown: REPLACEMENT,
+        expectedHash: nodeSha256Hex(KRAMDOWN),
+        confirmed: false,
+        validateOnly: true,
+      },
+      context,
+      basePolicy({}, [NOTEBOOK_ID, OTHER_NOTEBOOK_ID]),
+      mockIo({ refs: crossNotebookRefs }),
+    );
+    expect(result.mode).toBe("validated");
+    if (result.mode !== "validated") {
+      return;
+    }
+    expect(result.referencingCount).toBe(2);
+    expect(result.hiddenReferencingCount).toBe(0);
+    expect(result.referencing).toHaveLength(2);
+    expect(result.referenceRisk).toBe("critical");
+  });
+});
+
+describe("performEditBlock reference-fetch truncation", () => {
+  const fetchedRef = {
+    blockId: "20260101120300-reftrun1",
+    documentId: DOC_ID,
+    notebookId: NOTEBOOK_ID,
+    contentSnippet: "fetched reference snippet",
+  };
+
+  function truncatedIo(): EditBlockIo {
+    return {
+      ...mockIo(),
+      listReferencingBlocks: vi.fn(async () => ({
+        referencing: [fetchedRef],
+        dbTruncated: true,
+      })),
+    };
+  }
+
+  it("flags referencingTruncated and reports the count as a lower bound", async () => {
+    const result = await performEditBlock(
+      {
+        blockId: BLOCK_ID,
+        markdown: REPLACEMENT,
+        expectedHash: nodeSha256Hex(KRAMDOWN),
+        confirmed: false,
+        validateOnly: true,
+      },
+      context,
+      basePolicy(),
+      truncatedIo(),
+    );
+    expect(result.mode).toBe("validated");
+    if (result.mode !== "validated") {
+      return;
+    }
+    expect(result.referencingCount).toBe(1);
+    expect(result.referencingTruncated).toBe(true);
+    expect(result.referencing).toHaveLength(1);
+  });
+
+  it("deny mode says 'more than' when the fetch cap was hit", async () => {
+    const error = await performEditBlock(
+      {
+        blockId: BLOCK_ID,
+        markdown: REPLACEMENT,
+        expectedHash: nodeSha256Hex(KRAMDOWN),
+        confirmed: true,
+        validateOnly: true,
+      },
+      context,
+      basePolicy({ safety: { referenceProtection: "deny" } }),
+      truncatedIo(),
+    ).catch((err: EditBlockError) => err);
+    expect(error.code).toBe("operation_denied");
+    expect(error.message).toMatch(/more than 1 block/);
+  });
+});
+
+describe("performEditBlock uncertain-outcome error semantics", () => {
+  function txnResultIo(
+    state: "unknown" | "failed",
+    error: string,
+  ): EditBlockIo {
+    return {
+      ...mockIo(),
+      runWriteTransaction: vi.fn(async () => ({
+        state,
+        record: { id: "txn-uncertain-1" },
+        error,
+        notice:
+          state === "unknown"
+            ? "写入调用返回错误，结果不确定，未自动重试"
+            : "执行后回读验证不一致，写入结果与预期不符",
+      })),
+    } as unknown as EditBlockIo;
+  }
+
+  it("maps outcome_unknown with txnId, target, and no-auto-retry guidance", async () => {
+    const error = await performEditBlock(
+      {
+        blockId: BLOCK_ID,
+        markdown: REPLACEMENT,
+        expectedHash: nodeSha256Hex(KRAMDOWN),
+        confirmed: true,
+        validateOnly: false,
+      },
+      context,
+      basePolicy(),
+      txnResultIo("unknown", "outcome_unknown"),
+    ).catch((err: EditBlockError) => err);
+    expect(error.code).toBe("outcome_unknown");
+    expect(error.message).toContain("txn-uncertain-1");
+    expect(error.message).toContain(BLOCK_ID);
+    expect(error.message).toContain("do not auto-retry");
+  });
+
+  it("maps readback_mismatch (executed) to verification_failed, not invalid_request", async () => {
+    const error = await performEditBlock(
+      {
+        blockId: BLOCK_ID,
+        markdown: REPLACEMENT,
+        expectedHash: nodeSha256Hex(KRAMDOWN),
+        confirmed: true,
+        validateOnly: false,
+      },
+      context,
+      basePolicy(),
+      txnResultIo("failed", "readback_mismatch"),
+    ).catch((err: EditBlockError) => err);
+    expect(error.code).toBe("verification_failed");
+    expect(error.message).toContain("do not auto-retry");
   });
 });

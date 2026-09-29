@@ -22,7 +22,7 @@
 | 内部名称 | 职责 |
 |---|---|
 | **Access Boundary（访问边界）** | 笔记本允许/禁止名单、操作级允许/需确认/禁止、文档树权限继承（当前=笔记本决策下沉）、标签策略、审计（无正文）、插件 Agent capability 注册与 `/mcp` 暴露 |
-| **Safe Write Transaction（安全写事务，`SafeWriteTxn`）** | 写前快照 → 确认 → 执行前状态复核 → 只执行一次 → 回读验证 → 无正文审计；快照失败停止；`unknown` 不自动重试 |
+| **Safe Write Transaction（安全写事务，`SafeWriteTxn`）** | 写前快照 → 确认 → 执行前状态复核 → 只执行一次 → 回读验证 → 无正文审计；快照失败停止；结果语义三分：`state_changed`（未写入）/ `outcome_unknown`（可能已写入，先回读、禁止自动重试）/ `verification_failed`（已执行但回读不符）；错误保留 `txnId` 与目标 ID |
 | **Capability Catalog（能力目录）** | `catalog/capabilities.json` 单一事实源；Rust 内嵌解析；TS 生成 + 新鲜度门禁 |
 | **Wiki Template Catalog（Wiki 模板目录）** | `catalog/wiki-templates.json` 单一语义事实源；六类中英模板、版本、创建门槛、预览渲染和只读结构校验 |
 | **Local Gateway（本机网关 `siyuanmasterd`）** | 健康检查、能力目录、范围令牌校验、审计查询、事务预览/确认骨架；默认拒绝 |
@@ -129,11 +129,11 @@
 | 写标签先读后追加去重 | Access Boundary | P0 保留 | `mergeTags` | 已实现 |
 | 文档树有界浏览 | Access Boundary | P0 保留 | `list_document_tree` | 已实现 |
 | 两阶段重命名/移动 | Access Boundary | P0 保留 | `rename_note` / `move_note` | 已实现（结构预演；**未**走 SafeWriteTxn 状态机） |
-| 审计（无正文） | Access Boundary | P0 保留 | `src/audit.ts` + `core::audit` | 已实现 |
+| 审计（无正文） | Access Boundary | P0 保留 | `src/audit.ts` + `core::audit` | 已实现；追加串行化（并发不丢记录），存储读故障≠空日志（读失败不回写，防止瞬时故障抹掉历史），持久化失败不阻断工具并以 `writeFailures` 计数经 `get_audit_log` 反馈 |
 | 品牌展示与 package 名 | — | P0 | plugin/package/README/i18n | 已实现 |
 | 技术 ID 过渡策略 | — | P0 | plugin.json + catalog.compatibility | 已实现 |
 | 未来 ID 切换纯决策 | — | P0 | `src/migration.ts` | 已实现（纯函数；**未**接 onload） |
-| 启动自动迁移旧 petal | — | — | — | **未实现（本轮明确不做）** |
+| 启动自动迁移旧 petal | — | P0 | `src/migration.ts`（前端与 kernel onload/reloadPolicy 均调用） | 已实现（幂等有界复制；永不删除/改写旧目录） |
 | 双命名空间/旧别名双注册 | — | — | — | **未实现（单插件不可能）** |
 | Rust 工作区 | — | P0 | `crates/*` | 已实现（单元测试绿） |
 | 能力目录 + 生成/新鲜度 | — | P0 | catalog + scripts + tests | 已实现 |
@@ -256,7 +256,9 @@ catalog/capabilities.json
 | 持完整管理员 Token 调原生工具 | 已知边界：插件无法阻止；文档与 `get_policy` 声明 |
 | 范围令牌越权 | 作用域裁剪 + 默认拒绝 |
 | 预览后并发修改 | 执行前哈希复核 → `state_changed`（重试为新快照） |
-| 破坏块引用 | `referenceProtection` warn/deny |
+| 破坏块引用 | `referenceProtection` warn/deny；不可访问来源的引用仅计数（`hiddenReferencingCount`），不回传其 block/document ID 或正文片段 |
+| 跨笔记本引用来源泄露 | 引用查询结果按笔记本访问边界二次判定后返回；deny 判定基于全量引用（含不可访问来源） |
+| 删除目标身份错位（子块 ID 解析为根文档） | `delete_note` 与重命名/移动一致要求 `documentId` 精确指向文档本身；子块 ID 直接拒绝 |
 | 通过子文档绕过笔记本限制 | 笔记本判定应用于全部子孙（**非**文档级覆盖矩阵） |
 | 将 Sisyphus 转发官方工具当成本产品 | 外部参考；本产品不转发官方 MCP，避免绕过自身边界 |
 
@@ -267,8 +269,8 @@ catalog/capabilities.json
 | 工具 | 要点 |
 |---|---|
 | `resolve_document` | 只读；`notebookId`+`hPath`；不写 |
-| `read_note_segments` | 大纲 + 窗口；limit 被 `safety.longDocument` 硬夹紧。**`includeStateHash`**（默认 `false`）：为 `true` 时仅为**当前返回窗口**内每个块附加 `getBlockKramdown` 原文的 64 位小写 SHA-256 `stateHash`（不是 SQL markdown 文本哈希；从不对全文扫哈希）。该哈希是 `edit_block.expectedHash` 的权威来源。 |
-| `edit_block` | 精确 block ID；`expectedContent` 或 `expectedHash`（与当前 `getBlockKramdown` 原文比对/哈希）；引用影响；默认确认；进程内 SafeWriteTxn（快照→确认→复核→**只执行一次**→回读；失败不重试）。**`validateOnly=true`**：跑完整 expected-state + 引用预检后返回 `mode=validated` / `writeExecuted=false`，**永不**调用写 API（即使 `confirmed=true`）。审计 `preview`：`validateOnly` → `true`，真实写入 → `false`（仅元数据，无正文/哈希）。回读使用目标 ID 感知的 root-IAL 规范化（提交 markdown 逐字节前缀；body→IAL 边界为 rest 上恰好一个 LF/CRLF 分隔，或 expected 本身以 LF/CRLF 结尾且 rest 紧接单一 root IAL——后者把提交尾部换行当作分隔、不再额外要求；严格游标分词 IAL + 可选一个结尾 LF/CRLF；拒绝重复键/缺空白/畸形转义/同行第二 IAL 等）。确认后重试=新事务/新快照。 |
+| `read_note_segments` | 大纲 + 窗口；limit 被 `safety.longDocument` 硬夹紧。**`includeStateHash`**（默认 `false`）：为 `true` 时仅为**当前返回窗口**内每个块附加 `getBlockKramdown` 原文的 64 位小写 SHA-256 `stateHash`（不是 SQL markdown 文本哈希；从不对全文扫哈希）。该哈希是 `edit_block.expectedHash` 的权威来源。`dbTruncated=true` 表示文档超过单文档块抓取上限（5000）：此时 `totalBlocks` 为已抓取数而非真实总数，不得视为已读完。 |
+| `edit_block` | 精确 block ID；`expectedContent` 或 `expectedHash`（与当前 `getBlockKramdown` 原文比对/哈希）；引用影响；默认确认；进程内 SafeWriteTxn（快照→确认→复核→**只执行一次**→回读；失败不重试）。**`validateOnly=true`**：跑完整 expected-state + 引用预检后返回 `mode=validated` / `writeExecuted=false`，**永不**调用写 API（即使 `confirmed=true`）。审计 `preview`：`validateOnly` → `true`，真实写入 → `false`（仅元数据，无正文/哈希）。回读使用目标 ID 感知的 root-IAL 规范化（提交 markdown 逐字节前缀；body→IAL 边界为 rest 上恰好一个 LF/CRLF 分隔，或 expected 本身以 LF/CRLF 结尾且 rest 紧接单一 root IAL——后者把提交尾部换行当作分隔、不再额外要求；严格游标分词 IAL + 可选一个结尾 LF/CRLF；拒绝重复键/缺空白/畸形转义/同行第二 IAL 等）。确认后重试=新事务/新快照。引用视图按笔记本访问边界过滤：不可访问来源仅计入 `hiddenReferencingCount`（deny 判定仍基于全量引用）。引用抓取上限 200（LIMIT+1 探测）：`referencingTruncated=true` 时 `referencingCount` 为下界，deny 提示为 more than N。非 committed 终态错误码三分：`state_changed`（未写入）/ `outcome_unknown`（可能已写入，先回读、禁止自动重试）/ `verification_failed`（已执行但回读不符），均携带 `txnId` 与目标 ID。 |
 | `register_knowledge_source` | 由 `update` 策略约束；只登记允许访问的精确文档；存 source ID、文档/笔记本 ID、标题路径、SHA-256/URL、状态、operation ID 和权威页链接，不存正文；并发写串行化，重复来源不静默创建第二条。 |
 | `register_wiki_authority` | 由 `update` 策略约束；登记允许访问的精确 Wiki 文档、别名、六类页面类型、知识角色、source container 和来源链接；维护来源/权威页双向引用，竞争权威页只报告不自动合并。 |
 | `knowledge_status` | 只读；按当前访问边界计算来源状态、页面类型、链接覆盖率与最近更新时间；不可访问记录不计数、不返回，全局 registry revision 也不对外暴露。 |
@@ -277,11 +279,14 @@ catalog/capabilities.json
 | `render_wiki_template` | 只读预览；确定性生成中英 Markdown 骨架和带标识的 YAML 代码块元数据（不依赖 front matter 语义），返回 `previewOnly=true` / `writeExecuted=false`，不调用思源写接口。 |
 | `validate_wiki_template` | 只读检查；验证 H1、必需 H2 的缺失/重复/顺序、可选预期标题与元数据枚举；忽略代码围栏中的伪标题，不写笔记。 |
 | `plan_source_ingest` | 只读预演；读取精确 Raw 与注册表元数据，输出重复/复核/已摄取/更新/候选/回退/创建门槛/新建/保留 Raw 状态、有序操作计划及结构化影响摘要；不读正文、不执行写入，`readyForWorkflow` 也不代表写授权。 |
-| `update_note` | 同上：快照/确认/复核/回读；**无**跨调用 preview token；**无**用户可见全量 diff |
+| `validate_pdf_conversion` | 只读校验调用方提交的 Markdown 转换产出（标题/表格/代码围栏/截断标记计数）；不接触 PDF 原件，不做原件视觉/内容忠实度验证 |
+| `update_note` | 同上：快照/确认/复核/回读；**无**跨调用 preview token；**无**用户可见全量 diff；非 committed 终态错误码三分（见 `edit_block`）；正文提交后标签失败以成功返回并附 `tagStatus="failed"`/`tagError`，标签经 `apply_tags` 单独补 |
 
-### 10.1 思源 3.8.1 历史实机证据（加入 PDF 校验能力前）
+### 10.1 思源 3.8.1 历史实机证据（加入 PDF 校验能力前，2025-08 27 项目录时期）
 
-加入第 28 项 `validate_pdf_conversion` 之前，0.6.1 兼容性构建在**真实本地思源 3.8.1** 实例上已确认：
+> 以下数字采集于 `validate_pdf_conversion` 加入之前（当时目录为 27 项）。当前构建注册 **28** 项，冒烟脚本按 28 项校验；引用当前构建验收前须重新取证。
+
+当时 0.6.1 在**真实本地思源 3.8.1** 实例上确认：
 
 1. MCP `initialize` 协商协议 **`2025-03-26`**
 2. `tools/list` **总计 58** 项，其中 **27** 项 `plugin__siyuanmaster__*` Agent capability、**0** 项旧命名空间、31 项思源其他工具
@@ -318,6 +323,8 @@ catalog/capabilities.json
 ---
 
 ## 12. 测试与质量门禁
+
+与思源官方 API 的逐端点一致性对照、未文档化依赖面（SQL 内部表结构、`/mcp` + Agent capability）与版本升级回归清单见 [`docs/api-conformance.md`](./api-conformance.md)。
 
 - `pnpm build`：generate → check:catalog → typecheck → vitest → package.zip（目录仍为技术 ID 产物）
 - `cargo fmt --check`

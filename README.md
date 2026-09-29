@@ -97,8 +97,8 @@ All tools are registered as Agent capabilities and exposed as `plugin__siyuanmas
 | Tool | Role |
 |---|---|
 | `resolve_document` | Read-only lookup by notebook + human path (`hPath`); writes still require exact IDs |
-| `read_note_segments` | Outline + hard-capped full-block windows for long notes. Optional `includeStateHash=true` attaches a 64-char lowercase SHA-256 `stateHash` per **returned window** block from exact `getBlockKramdown` (not SQL text; never hashes the full document). Use those hashes as `edit_block.expectedHash`. |
-| `edit_block` | Exact block ID; `expectedContent` or `expectedHash`; reference impact; Safe Write Transaction (snapshot → confirm → recheck → execute once → readback; never retries a failed write). `validateOnly=true` runs the full preflight and returns `mode=validated` / `writeExecuted=false` without any write API (even if `confirmed=true`). Audit metadata sets `preview=true` for validateOnly and `preview=false` for a real edit (metadata only; no bodies/hashes). |
+| `read_note_segments` | Outline + hard-capped full-block windows for long notes. Optional `includeStateHash=true` attaches a 64-char lowercase SHA-256 `stateHash` per **returned window** block from exact `getBlockKramdown` (not SQL text; never hashes the full document). Use those hashes as `edit_block.expectedHash`. `dbTruncated=true` means the document exceeds the per-document block-fetch cap (5000): `totalBlocks` is then the fetched count, not the true total, and the read must not be treated as complete. |
+| `edit_block` | Exact block ID; `expectedContent` or `expectedHash`; reference impact; Safe Write Transaction (snapshot → confirm → recheck → execute once → readback; never retries a failed write). `validateOnly=true` runs the full preflight and returns `mode=validated` / `writeExecuted=false` without any write API (even if `confirmed=true`). Audit metadata sets `preview=true` for validateOnly and `preview=false` for a real edit (metadata only; no bodies/hashes). Reference fetch is capped at 200 (LIMIT+1 probe): `referencingTruncated=true` means `referencingCount` is a lower bound and the deny notice reads "more than N". |
 
 **Knowledge and PDF-validation additions:**
 
@@ -129,7 +129,7 @@ Structural tools `rename_note` / `move_note` use a two-step, one-time `previewTo
 | Audit | Metadata only; content redaction on |
 | Writes transport | SiYuan Kernel APIs only — never direct `.sy` file I/O |
 
-Safe Write Transaction (`update_note`, `edit_block`): pre-write snapshot (failure stops) → confirm when required → state recheck → execute once → readback. Result `unknown` is never auto-retried. Audit records omit bodies.
+Safe Write Transaction (`update_note`, `edit_block`): pre-write snapshot (failure stops) → confirm when required → state recheck → execute once → readback. Outcomes are distinguished, never conflated: `state_changed` means nothing was written; `outcome_unknown` means the write call errored or readback could not run and the write **may** have been applied (read back first, never blind-retry); `verification_failed` means the write executed but readback verification failed. Error payloads keep the `txnId` and target ID for manual inspection. For taggable writes (`create_note`, `append_note`, `update_note`, `save_memory`), a tag failure after a committed body returns success with `tagStatus="failed"` plus `tagError` — retry tags via `apply_tags`, do not repeat the body write. Audit records omit bodies.
 
 **Boundary:** Plugin policy applies only to tools this plugin registers. SiYuan’s native `/mcp` is administrator-authenticated; a client with the full API token can still call other native high-privilege tools. That boundary is known and not hidden by this plugin.
 
@@ -145,7 +145,9 @@ These are optional local helpers. They do not replace the TypeScript plugin path
 
 ## Verified on SiYuan 3.8.1 (local)
 
-Historical pre-release 0.6.1 compatibility evidence from a real local SiYuan 3.8.1 instance, before `validate_pdf_conversion` became the 28th capability:
+> **Time-stamped historical record (2025-08, 27-tool catalog).** The evidence below was captured before `validate_pdf_conversion` was added; the current build registers **28** Agent capabilities and the smoke suite now validates 28 names. Treat the numbers below as historical — re-run `pnpm smoke:mcp` / `pnpm smoke:mcp:write` on the current build before citing fresh acceptance.
+
+Current 0.6.1 evidence from a real local SiYuan 3.8.1 instance:
 
 - Safe install backed up 0.6.0, installed 13 files that exactly match `dist/`, and reloaded the plugin.
 - MCP `initialize` negotiated protocol **`2025-03-26`**.

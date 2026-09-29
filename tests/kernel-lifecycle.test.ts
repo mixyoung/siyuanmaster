@@ -61,6 +61,31 @@ describe("kernel IPluginLifecycle bindings", () => {
 });
 
 /**
+ * Structural guard: registerDeleteTool must resolve the exact document
+ * identity (same invariant as rename/move). A child block ID must be
+ * rejected, never silently resolved to its root document for deletion.
+ */
+describe("registerDeleteTool exact-document target identity", () => {
+  const source = readFileSync(kernelSourcePath, "utf8");
+
+  function extractRegisterDeleteBody(): string {
+    const start = source.indexOf("private async registerDeleteTool");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const next = source.indexOf("\n  private async ", start + 1);
+    expect(next).toBeGreaterThan(start);
+    return source.slice(start, next);
+  }
+
+  it("requires documentId to identify the document itself, not a child block", () => {
+    const body = extractRegisterDeleteBody();
+    expect(body).toMatch(/await\s+this\.assertExactDocumentAllowed\(/);
+    // The lax variant (which resolves child blocks to their root document)
+    // must not appear in the delete path.
+    expect(body).not.toMatch(/assertDocumentAllowed\(/);
+  });
+});
+
+/**
  * Structural guard: registerEditBlockTool must deny update before any
  * document resolution or getBlockKramdown, and mark validateOnly as audit preview.
  */

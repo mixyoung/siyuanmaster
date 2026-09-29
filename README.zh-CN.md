@@ -97,8 +97,8 @@
 | 工具 | 作用 |
 |---|---|
 | `resolve_document` | 按笔记本 + 人类路径（`hPath`）只读查找；写入仍要求精确 ID |
-| `read_note_segments` | 大纲 + 硬上限全块窗口，适合长文 |
-| `edit_block` | 精确块 ID、期望内容/哈希、引用影响、Safe Write Transaction |
+| `read_note_segments` | 大纲 + 硬上限全块窗口，适合长文；`dbTruncated=true` 表示文档超过单文档块抓取上限（5000），此时 `totalBlocks` 为已抓取数而非真实总数，不得视为已读完 |
+| `edit_block` | 精确块 ID、期望内容/哈希、引用影响、Safe Write Transaction；引用抓取上限 200（LIMIT+1 探测），`referencingTruncated=true` 时 `referencingCount` 为下界 |
 
 **知识与 PDF 校验新增：**
 
@@ -129,7 +129,7 @@
 | 审计 | 仅元数据；开启正文脱敏 |
 | 写入通道 | 仅通过思源内核 API——从不直接读写 `.sy` 文件 |
 
-Safe Write Transaction（`update_note`、`edit_block`）：写前快照（失败即停）→ 按需确认 → 状态复核 → 只执行一次 → 回读验证。结果为 `unknown` 时不自动重试。审计记录不含正文。
+Safe Write Transaction（`update_note`、`edit_block`）：写前快照（失败即停）→ 按需确认 → 状态复核 → 只执行一次 → 回读验证。结果语义明确区分：`state_changed` 表示未写入；`outcome_unknown` 表示写入调用出错或回读无法执行、写入**可能已生效**（先回读核实，绝不盲目重试）；`verification_failed` 表示已执行但回读验证不符。错误信息保留 `txnId` 与目标 ID 供人工核查。对可打标签的写入（`create_note`、`append_note`、`update_note`、`save_memory`），正文提交后标签失败将以成功返回并附 `tagStatus="failed"` 与 `tagError`——请用 `apply_tags` 单独补标签，不要重复正文写入。审计记录不含正文。
 
 **边界：** 插件策略仅保护本插件注册的工具。思源原生 `/mcp` 为管理员级认证入口；持有完整 API Token 的客户端仍可调用其他原生高权限工具。该边界已知，本插件不掩盖。
 
@@ -145,7 +145,9 @@ Safe Write Transaction（`update_note`、`edit_block`）：写前快照（失败
 
 ## 思源 3.8.1 实机验证
 
-以下是加入第 28 项 `validate_pdf_conversion` 之前，0.6.1 兼容性构建在真实本机思源 3.8.1 上的历史验证：
+> **带时间戳的历史记录（2025-08，27 项工具目录时期）。** 以下证据采集于 `validate_pdf_conversion` 加入之前；当前构建注册 **28** 项 Agent capability，冒烟脚本已按 28 项校验。以下数字应视为历史记录——引用新的验收结论前，请在当前构建上重跑 `pnpm smoke:mcp` / `pnpm smoke:mcp:write`。
+
+当时 0.6.1 在真实本机思源 3.8.1 上的验证：
 
 - 安全安装流程备份 0.6.0，安装与 `dist/` 逐项一致的 13 个文件并完成重载；
 - MCP `initialize` 协商协议为 **`2025-03-26`**；

@@ -286,20 +286,28 @@ export class KernelApiClient {
     return typeof data.kramdown === "string" ? data.kramdown : "";
   }
 
+  /** Hard per-document fetch cap. A document with more content blocks than
+   * this is reported as truncated — the fetched count must never be treated
+   * as the document's true block total. */
+  static readonly MAX_DOCUMENT_BLOCK_FETCH = 5000;
+
   /**
    * Ordered content blocks under a document root, excluding the document
-   * row itself. Used by segmented long-document reads.
+   * row itself. Used by segmented long-document reads. Fetches one extra
+   * row beyond the cap to detect database-level truncation; `dbTruncated`
+   * is true when the document has more blocks than were returned.
    */
-  async listDocumentBlocks(documentId: string): Promise<
-    Array<{
+  async listDocumentBlocks(documentId: string): Promise<{
+    blocks: Array<{
       id: string;
       type: string;
       subtype: string;
       content: string;
       markdown: string;
       sort: number;
-    }>
-  > {
+    }>;
+    dbTruncated: boolean;
+  }> {
     const safeId = assertSiyuanId(documentId, "documentId");
     const rows = await this.sql<{
       id: string;
@@ -314,30 +322,41 @@ export class KernelApiClient {
        WHERE root_id = '${escapeSqlLiteral(safeId)}'
          AND id != '${escapeSqlLiteral(safeId)}'
        ORDER BY sort ASC, id ASC
-       LIMIT 5000`,
+       LIMIT ${KernelApiClient.MAX_DOCUMENT_BLOCK_FETCH + 1}`,
     );
-    return rows.map((row) => ({
-      id: row.id,
-      type: row.type,
-      subtype: row.subtype ?? "",
-      content: row.content ?? "",
-      markdown: row.markdown ?? "",
-      sort: Number(row.sort) || 0,
-    }));
+    const dbTruncated = rows.length > KernelApiClient.MAX_DOCUMENT_BLOCK_FETCH;
+    return {
+      blocks: rows.slice(0, KernelApiClient.MAX_DOCUMENT_BLOCK_FETCH).map((row) => ({
+        id: row.id,
+        type: row.type,
+        subtype: row.subtype ?? "",
+        content: row.content ?? "",
+        markdown: row.markdown ?? "",
+        sort: Number(row.sort) || 0,
+      })),
+      dbTruncated,
+    };
   }
+
+  /** Hard per-target reference-fetch cap. More refs than this are reported
+   * as truncated — the fetched count is a lower bound, never the true total. */
+  static readonly MAX_REFERENCING_FETCH = 200;
 
   /**
    * Blocks that reference `blockId` as a definition target (`refs` table).
-   * Results are metadata-only snippets for impact previews.
+   * Results are metadata-only snippets for impact previews. Fetches one
+   * extra row beyond the cap to detect truncation; `dbTruncated` is true
+   * when more refs exist than were returned.
    */
-  async listReferencingBlocks(blockId: string): Promise<
-    Array<{
+  async listReferencingBlocks(blockId: string): Promise<{
+    referencing: Array<{
       blockId: string;
       documentId: string;
       notebookId: string;
       contentSnippet: string;
-    }>
-  > {
+    }>;
+    dbTruncated: boolean;
+  }> {
     const safeId = assertSiyuanId(blockId, "blockId");
     const rows = await this.sql<{
       block_id: string;
@@ -352,14 +371,21 @@ export class KernelApiClient {
        FROM refs r
        JOIN blocks b ON b.id = r.block_id
        WHERE r.def_block_id = '${escapeSqlLiteral(safeId)}'
-       LIMIT 200`,
+       LIMIT ${KernelApiClient.MAX_REFERENCING_FETCH + 1}`,
     );
-    return rows.map((row) => ({
-      blockId: row.block_id,
-      documentId: row.root_id,
-      notebookId: row.box,
-      contentSnippet: (row.content ?? "").slice(0, 120),
-    }));
+    const dbTruncated =
+      rows.length > KernelApiClient.MAX_REFERENCING_FETCH;
+    return {
+      referencing: rows
+        .slice(0, KernelApiClient.MAX_REFERENCING_FETCH)
+        .map((row) => ({
+          blockId: row.block_id,
+          documentId: row.root_id,
+          notebookId: row.box,
+          contentSnippet: (row.content ?? "").slice(0, 120),
+        })),
+      dbTruncated,
+    };
   }
 
   async removeDocument(documentId: string): Promise<void> {

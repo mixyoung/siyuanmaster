@@ -20,7 +20,12 @@ export type EditBlockErrorCode =
   | "operation_denied"
   | "confirmation_required"
   | "state_changed"
-  | "invalid_request";
+  | "invalid_request"
+  /** Write call errored or readback could not be performed: the write may
+   * have been applied. Callers must read back and must not auto-retry. */
+  | "outcome_unknown"
+  /** Write executed but readback verification failed. Not safe to blind-retry. */
+  | "verification_failed";
 
 export class EditBlockError extends Error {
   constructor(
@@ -41,11 +46,24 @@ export interface EditBlockPolicySlice {
     };
     referenceProtection: ReferenceProtectionMode;
   };
+  /**
+   * Access boundary re-check for referencing blocks. Reference queries span
+   * the whole repository; a reference that originates outside the allowed
+   * notebooks must never expose its block/document IDs or content snippet.
+   */
+  access: {
+    isNotebookAllowed: (notebookId: string) => boolean;
+  };
 }
 
 export interface EditBlockIo {
   getBlockKramdown: (blockId: string) => Promise<string>;
-  listReferencingBlocks: (blockId: string) => Promise<ReferencingBlock[]>;
+  /** Reference fetch spans the whole repository; dbTruncated marks that the
+   * fetch cap was hit and the returned list is a lower bound. */
+  listReferencingBlocks: (blockId: string) => Promise<{
+    referencing: ReferencingBlock[];
+    dbTruncated: boolean;
+  }>;
   updateBlockMarkdown: (blockId: string, markdown: string) => Promise<void>;
   /** Injected for tests; defaults to production SafeWriteTxn runner. */
   runWriteTransaction?: typeof runWriteTransaction;
@@ -86,8 +104,15 @@ export interface EditBlockValidatedResult {
   documentId: string;
   notebookId: string;
   referenceRisk: ReferenceRisk;
+  /** Fetched reference count. A lower bound when referencingTruncated. */
   referencingCount: number;
   referencing: EditBlockReferenceView[];
+  /** References from notebooks outside the access boundary. Details are
+   * withheld; only this count is reported so the total stays explainable. */
+  hiddenReferencingCount: number;
+  /** True when the reference fetch hit its cap: referencingCount is a lower
+   * bound and the true reference set is larger. */
+  referencingTruncated: boolean;
 }
 
 export interface EditBlockCommittedResult {
@@ -96,8 +121,13 @@ export interface EditBlockCommittedResult {
   notebookId: string;
   updatedCharacters: number;
   referenceRisk: ReferenceRisk;
+  /** Fetched reference count. A lower bound when referencingTruncated. */
   referencingCount: number;
   referencing: EditBlockReferenceView[];
+  /** References from notebooks outside the access boundary (details withheld). */
+  hiddenReferencingCount: number;
+  /** True when the reference fetch hit its cap (count is a lower bound). */
+  referencingTruncated: boolean;
   txnId: string;
   txnState: WriteTransactionResult["state"];
   verified: true;
@@ -453,16 +483,27 @@ export async function performEditBlock(
     );
   }
 
-  const referencing = await io.listReferencingBlocks(writeTarget.id);
+  const { referencing, dbTruncated: referencingTruncated } =
+    await io.listReferencingBlocks(writeTarget.id);
   const risk = classifyReferenceRisk(referencing, context.documentId);
   if (!referenceAllows(referencing, policy.safety.referenceProtection)) {
     throw new EditBlockError(
       "operation_denied",
-      `Block is referenced by ${referencing.length} block(s); referenceProtection=deny blocks the edit`,
+      `Block is referenced by ${
+        referencingTruncated ? "more than " : ""
+      }${referencing.length} block(s); referenceProtection=deny blocks the edit`,
     );
   }
 
-  const referencingView = mapReferencing(referencing);
+  // Access boundary re-check: reference queries span the whole repository.
+  // Inaccessible references still count toward risk and the deny decision
+  // above (conservative), but their IDs and snippets are never returned.
+  const accessibleReferencing = referencing.filter((item) =>
+    policy.access.isNotebookAllowed(item.notebookId),
+  );
+  const hiddenReferencingCount =
+    referencing.length - accessibleReferencing.length;
+  const referencingView = mapReferencing(accessibleReferencing);
 
   // Atomic validateOnly: after full preflight, never write — even when
   // confirmed=true and policy would allow execute without confirmation.
@@ -477,6 +518,8 @@ export async function performEditBlock(
       referenceRisk: risk,
       referencingCount: referencing.length,
       referencing: referencingView,
+      hiddenReferencingCount,
+      referencingTruncated,
     };
   }
 
@@ -529,9 +572,25 @@ export async function performEditBlock(
     );
   }
   if (txn.state !== "committed") {
+    // Distinguish "definitely not executed" (state drift / snapshot failure)
+    // from "possibly executed" (outcome_unknown) and "executed but readback
+    // mismatched" (verification_failed). The latter two must never be
+    // blind-retried; callers read back first.
+    const errorCode: EditBlockErrorCode =
+      txn.error === "state_changed" || txn.error === "snapshot_failed"
+        ? "state_changed"
+        : txn.error === "outcome_unknown"
+          ? "outcome_unknown"
+          : txn.error === "readback_mismatch"
+            ? "verification_failed"
+            : "invalid_request";
     throw new EditBlockError(
-      txn.error === "state_changed" ? "state_changed" : "invalid_request",
-      txn.notice ?? `Safe Write Transaction ended in state ${txn.state}`,
+      errorCode,
+      `${txn.notice ?? `Safe Write Transaction ended in state ${txn.state}`} (txnId=${txn.record.id}, blockId=${writeTarget.id}; ${
+        errorCode === "outcome_unknown" || errorCode === "verification_failed"
+          ? "do not auto-retry; read back the block first"
+          : "nothing was written"
+      })`,
     );
   }
 
@@ -543,6 +602,8 @@ export async function performEditBlock(
     referenceRisk: risk,
     referencingCount: referencing.length,
     referencing: referencingView,
+    hiddenReferencingCount,
+    referencingTruncated,
     txnId: txn.record.id,
     txnState: txn.state,
     verified: true,

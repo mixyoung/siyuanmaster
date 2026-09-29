@@ -62,6 +62,18 @@ function taggingModeLabel(mode: TaggingMode): string {
   return labels[mode];
 }
 
+/**
+ * Raised when the policy was persisted to plugin storage but the kernel did
+ * NOT confirm the reload (RPC failed or effective policy mismatch). The
+ * kernel may keep serving the previous policy until a successful reload.
+ */
+class KernelPolicyReloadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "KernelPolicyReloadError";
+  }
+}
+
 export default class SiYuanMasterPlugin extends Plugin {
   private policy = clonePolicy(DEFAULT_POLICY);
   private notebooks: NotebookSummary[] = [];
@@ -80,14 +92,14 @@ export default class SiYuanMasterPlugin extends Plugin {
       return;
     }
     await this.loadPolicy();
-    await this.notifyKernelPolicyChanged();
+    await this.syncKernelPolicy();
     this.renderDock();
   }
 
   private async bootstrap(): Promise<void> {
     try {
       await Promise.all([this.loadPolicy(), this.refreshNotebooks()]);
-      await this.notifyKernelPolicyChanged();
+      await this.syncKernelPolicy();
       this.bootstrapped = true;
       this.renderDock();
     } catch (error) {
@@ -367,15 +379,62 @@ export default class SiYuanMasterPlugin extends Plugin {
   private async persistPolicy(policy: PluginPolicy): Promise<void> {
     this.policy = normalizePolicy(policy);
     await this.saveData(POLICY_STORAGE_KEY, this.policy);
-    await this.notifyKernelPolicyChanged();
+    // Saved ≠ effective: the kernel keeps its own in-memory policy copy and
+    // must confirm the reload. A failure here propagates so the UI never
+    // claims immediate effect while the kernel may still use the old policy.
+    await this.confirmKernelPolicyReloaded();
     this.renderDock();
   }
 
-  private async notifyKernelPolicyChanged(): Promise<void> {
+  /**
+   * Reloads the kernel policy RPC and verifies the kernel's effective
+   * summary against the just-saved policy. Throws KernelPolicyReloadError
+   * when the kernel did not confirm the new policy.
+   */
+  private async confirmKernelPolicyReloaded(): Promise<void> {
+    let status: Record<string, unknown>;
     try {
-      await this.kernel.rpc.call.reloadPolicy();
+      status = (await this.kernel.rpc.call.reloadPolicy()) as Record<
+        string,
+        unknown
+      >;
     } catch (error) {
-      console.warn(`[${this.name}] kernel policy reload deferred`, error);
+      throw new KernelPolicyReloadError(
+        `内核策略重载 RPC 失败：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    const mismatches: string[] = [];
+    if (status?.accessMode !== this.policy.access.mode) {
+      mismatches.push(
+        `accessMode 内核=${String(status?.accessMode)} 已保存=${this.policy.access.mode}`,
+      );
+    }
+    const expectedCount = this.policy.access.selectedNotebookIds.length;
+    if (status?.selectedNotebookCount !== expectedCount) {
+      mismatches.push(
+        `selectedNotebookCount 内核=${String(
+          status?.selectedNotebookCount,
+        )} 已保存=${expectedCount}`,
+      );
+    }
+    if (mismatches.length > 0) {
+      throw new KernelPolicyReloadError(
+        `内核生效策略与已保存策略不一致（${mismatches.join("；")}）`,
+      );
+    }
+  }
+
+  /** Background sync (bootstrap/data change): reload best-effort, warn loudly. */
+  private async syncKernelPolicy(): Promise<void> {
+    try {
+      await this.confirmKernelPolicyReloaded();
+    } catch (error) {
+      console.warn(
+        `[${this.name}] kernel policy reload not confirmed; kernel may keep serving the previous policy`,
+        error,
+      );
     }
   }
 
@@ -422,7 +481,7 @@ export default class SiYuanMasterPlugin extends Plugin {
             <div>
               <p class="sym-kicker">SIYUANMASTER / ACCESS BOUNDARY</p>
               <h2>决定 AI 能看见与写入什么</h2>
-              <p>配置访问边界、安全写入、操作权限与标签策略。保存后立即生效。</p>
+              <p>配置访问边界、安全写入、操作权限与标签策略。保存后需内核确认生效；重载失败会显式告警，不会静默沿用旧策略。</p>
             </div>
             <div class="sym-settings__seal">
               <span>LOCAL</span>
@@ -737,7 +796,7 @@ export default class SiYuanMasterPlugin extends Plugin {
             <span data-sym-save-note>尚未保存本次修改</span>
             <div>
               <button class="b3-button b3-button--cancel" data-sym-dialog-action="cancel">取消</button>
-              <button class="b3-button b3-button--text" data-sym-dialog-action="save">保存并立即生效</button>
+              <button class="b3-button b3-button--text" data-sym-dialog-action="save">保存</button>
             </div>
           </footer>
         </div>
@@ -984,12 +1043,22 @@ export default class SiYuanMasterPlugin extends Plugin {
         saveButton.textContent = "正在保存…";
         void this.persistPolicy(draft)
           .then(() => {
-            showMessage("访问策略已保存并立即生效", 3000, "info");
+            showMessage("访问策略已保存，内核已确认生效", 3000, "info");
             dialog.destroy();
           })
           .catch((error) => {
             saveButton.disabled = false;
-            saveButton.textContent = "保存并立即生效";
+            saveButton.textContent = "保存";
+            if (error instanceof KernelPolicyReloadError) {
+              // Storage has the new policy; the kernel has NOT confirmed it.
+              // Keep the dialog open so the user can retry the reload.
+              showMessage(
+                `已保存到插件存储，但${error.message}。内核可能仍在使用旧策略；可重试保存，或禁用并重新启用插件`,
+                7000,
+                "error",
+              );
+              return;
+            }
             showMessage(
               `保存失败：${
                 error instanceof Error ? error.message : String(error)

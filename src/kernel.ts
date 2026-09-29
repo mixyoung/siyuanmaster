@@ -120,7 +120,12 @@ class PolicyViolation extends Error {
       | "preview_expired"
       | "state_changed"
       | "name_conflict"
-      | "invalid_request",
+      | "invalid_request"
+      /** Write call errored or readback failed: the write may have been
+       * applied. Callers must read back and must not auto-retry. */
+      | "outcome_unknown"
+      /** Write executed but post-write verification failed. */
+      | "verification_failed",
     message: string,
   ) {
     super(message);
@@ -863,6 +868,42 @@ class SiYuanMasterKernelPlugin {
     return { addedTags: plan.tags, reason: plan.reason };
   }
 
+  /**
+   * Post-body-write tag application. The body write has already succeeded
+   * (and, for transactional tools, been verified by readback) when this
+   * runs, so a tag failure must NOT surface as a plain tool failure — the
+   * caller would reasonably retry the body write and duplicate it. Instead
+   * report partial success: body committed, tags failed, retry tags only
+   * via apply_tags.
+   */
+  private async applyTagsAfterBodyWrite(
+    documentId: string,
+    operation: TaggableOperation,
+    taggingInput: unknown,
+  ): Promise<{
+    addedTags: string[];
+    reason: string;
+    tagStatus: "applied" | "skipped" | "failed";
+    tagError?: string;
+  }> {
+    try {
+      const result = await this.applyTags(documentId, operation, taggingInput);
+      return {
+        ...result,
+        tagStatus: result.addedTags.length > 0 ? "applied" : "skipped",
+      };
+    } catch (error) {
+      return {
+        addedTags: [],
+        reason:
+          "body write committed and verified; tag update failed — retry tags separately with apply_tags, do not repeat the body write",
+        tagStatus: "failed",
+        tagError:
+          error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   private async registerPolicyTool(): Promise<void> {
     await this.registerTool(
       "get_policy",
@@ -1332,7 +1373,7 @@ class SiYuanMasterKernelPlugin {
                   : undefined,
               markdown: content,
             });
-            const tagResult = await this.applyTags(
+            const tagResult = await this.applyTagsAfterBodyWrite(
               documentId,
               "create",
               input.tagging,
@@ -1403,7 +1444,7 @@ class SiYuanMasterKernelPlugin {
               context.document.id,
               content,
             );
-            const tagResult = await this.applyTags(
+            const tagResult = await this.applyTagsAfterBodyWrite(
               context.document.id,
               "append",
               input.tagging,
@@ -1519,15 +1560,28 @@ class SiYuanMasterKernelPlugin {
               );
             }
             if (txn.state !== "committed") {
-              throw new PolicyViolation(
-                txn.error === "state_changed"
+              // "definitely not executed" vs "possibly executed" vs
+              // "executed but verification failed" — see EditBlockErrorCode.
+              const errorCode =
+                txn.error === "state_changed" ||
+                txn.error === "snapshot_failed"
                   ? "state_changed"
-                  : "invalid_request",
-                txn.notice ??
-                  `Safe Write Transaction ended in state ${txn.state}`,
+                  : txn.error === "outcome_unknown"
+                    ? "outcome_unknown"
+                    : txn.error === "readback_mismatch"
+                      ? "verification_failed"
+                      : "invalid_request";
+              throw new PolicyViolation(
+                errorCode,
+                `${txn.notice ?? `Safe Write Transaction ended in state ${txn.state}`} (txnId=${txn.record.id}, documentId=${context.document.id}; ${
+                  errorCode === "outcome_unknown" ||
+                  errorCode === "verification_failed"
+                    ? "do not auto-retry; read back the document first"
+                    : "nothing was written"
+                })`,
               );
             }
-            const tagResult = await this.applyTags(
+            const tagResult = await this.applyTagsAfterBodyWrite(
               context.document.id,
               "update",
               input.tagging,
@@ -1666,9 +1720,8 @@ class SiYuanMasterKernelPlugin {
               limits.maxBlocksPerWindow,
             );
             const includeStateHash = input.includeStateHash === true;
-            const rawBlocks = await this.client.listDocumentBlocks(
-              context.document.id,
-            );
+            const { blocks: rawBlocks, dbTruncated } =
+              await this.client.listDocumentBlocks(context.document.id);
             const blocks: BlockRow[] = rawBlocks.map((row) => {
               const blockType =
                 row.subtype && /^h[1-6]$/.test(row.subtype)
@@ -1723,7 +1776,14 @@ class SiYuanMasterKernelPlugin {
               offset,
               limit: requestedLimit,
               nextOffset: window.nextOffset,
+              /** Count of fetched blocks. When dbTruncated is true this is
+               * the fetch cap, NOT the document's true block total. */
               totalBlocks: blocks.length,
+              /** Database-level truncation: the document has more blocks
+               * than the per-document fetch cap. Later blocks are not
+               * available through this tool; do not treat this read as
+               * complete. */
+              dbTruncated,
               limits: {
                 maxBlocksPerWindow: limits.maxBlocksPerWindow,
                 maxCharsPerBlock: limits.maxCharsPerBlock,
@@ -2820,6 +2880,10 @@ class SiYuanMasterKernelPlugin {
                     referenceProtection:
                       this.policy.safety.referenceProtection,
                   },
+                  access: {
+                    isNotebookAllowed: (notebookId: string) =>
+                      isNotebookAllowed(notebookId, this.policy),
+                  },
                 },
                 {
                   getBlockKramdown: (id) => this.client.getBlockKramdown(id),
@@ -3397,7 +3461,10 @@ class SiYuanMasterKernelPlugin {
               );
             }
             this.ensureOperation("delete", confirmed);
-            const context = await this.assertDocumentAllowed(
+            // Exact document identity (same as rename/move): a child block
+            // ID must never resolve to its root document for deletion —
+            // the deleted target must be exactly the requested document.
+            const context = await this.assertExactDocumentAllowed(
               input.documentId,
             );
             const expectedTitle = stringInput(
@@ -3671,7 +3738,7 @@ class SiYuanMasterKernelPlugin {
                 context.document.id,
                 markdown,
               );
-              const tagResult = await this.applyTags(
+              const tagResult = await this.applyTagsAfterBodyWrite(
                 context.document.id,
                 "memory",
                 input.tagging,
@@ -3703,7 +3770,7 @@ class SiYuanMasterKernelPlugin {
                   : undefined,
               markdown,
             });
-            const tagResult = await this.applyTags(
+            const tagResult = await this.applyTagsAfterBodyWrite(
               createdId,
               "memory",
               input.tagging,
@@ -3747,7 +3814,13 @@ class SiYuanMasterKernelPlugin {
             const entries = await this.audit.list(
               boundedInteger(input.limit, 50, 1, 200),
             );
-            return { count: entries.length, entries };
+            return {
+              count: entries.length,
+              entries,
+              /** Entries lost to storage persistence failures since plugin
+               * start — audit is best-effort and never blocks a tool. */
+              writeFailures: this.audit.writeFailureCount,
+            };
           },
         ),
     );
