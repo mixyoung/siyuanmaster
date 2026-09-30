@@ -8,6 +8,7 @@ import type {
   TagApplyMode,
   TaggingMode,
 } from "./types";
+import { computeContentHash } from "./write-transaction";
 
 export const POLICY_STORAGE_KEY = "policy.json";
 
@@ -375,4 +376,19 @@ export function countAccessibleNotebooks(
   return notebooks.filter((notebook) =>
     isNotebookAllowed(notebook.id, policy),
   ).length;
+}
+
+
+/**
+ * Deterministic fingerprint of the normalized policy (SHA-256 over its
+ * canonical JSON). The kernel reports this in `status()` and the settings
+ * UI compares it after a reload, so "kernel confirmed effective" means the
+ * FULL policy matched - notebook ID set, operation decisions, tagging, and
+ * safety - not just a mode plus a count. Idempotent: normalizing an already
+ * normalized policy yields the same fingerprint.
+ */
+export async function computePolicyFingerprint(
+  policy: PluginPolicy,
+): Promise<string> {
+  return computeContentHash(JSON.stringify(normalizePolicy(policy)));
 }

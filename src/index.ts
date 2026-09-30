@@ -1,6 +1,7 @@
 import { Dialog, Plugin, Setting, showMessage } from "siyuan";
 import {
   clonePolicy,
+  computePolicyFingerprint,
   countAccessibleNotebooks,
   DEFAULT_POLICY,
   isNotebookAllowed,
@@ -388,8 +389,11 @@ export default class SiYuanMasterPlugin extends Plugin {
 
   /**
    * Reloads the kernel policy RPC and verifies the kernel's effective
-   * summary against the just-saved policy. Throws KernelPolicyReloadError
-   * when the kernel did not confirm the new policy.
+   * policy FINGERPRINT against the just-saved policy. A fingerprint covers
+   * the full normalized policy (notebook ID set, operation decisions,
+   * tagging, safety) — matching mode + count alone would let a stale or
+   * default-fallback policy be confirmed as effective. Throws
+   * KernelPolicyReloadError when the kernel did not confirm.
    */
   private async confirmKernelPolicyReloaded(): Promise<void> {
     let status: Record<string, unknown>;
@@ -405,23 +409,13 @@ export default class SiYuanMasterPlugin extends Plugin {
         }`,
       );
     }
-    const mismatches: string[] = [];
-    if (status?.accessMode !== this.policy.access.mode) {
-      mismatches.push(
-        `accessMode 内核=${String(status?.accessMode)} 已保存=${this.policy.access.mode}`,
-      );
-    }
-    const expectedCount = this.policy.access.selectedNotebookIds.length;
-    if (status?.selectedNotebookCount !== expectedCount) {
-      mismatches.push(
-        `selectedNotebookCount 内核=${String(
-          status?.selectedNotebookCount,
-        )} 已保存=${expectedCount}`,
-      );
-    }
-    if (mismatches.length > 0) {
+    const expectedFingerprint = await computePolicyFingerprint(this.policy);
+    if (
+      typeof status?.policyFingerprint !== "string" ||
+      status.policyFingerprint !== expectedFingerprint
+    ) {
       throw new KernelPolicyReloadError(
-        `内核生效策略与已保存策略不一致（${mismatches.join("；")}）`,
+        `内核生效策略与已保存策略不一致（指纹比对失败；内核可能仍在使用旧策略或已退回默认策略）`,
       );
     }
   }

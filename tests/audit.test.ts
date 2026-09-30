@@ -4,39 +4,56 @@ import { DEFAULT_POLICY, clonePolicy } from "../src/config";
 import type * as kernel from "siyuan/kernel";
 import type { AuditEntry, PluginPolicy } from "../src/types";
 
-interface MockStorage {
-  get: ReturnType<typeof vi.fn>;
-  put: ReturnType<typeof vi.fn>;
-}
+const AUDIT_FILE = {
+  name: "audit.json",
+  isDir: false,
+  isSymlink: false,
+  updated: 1,
+};
 
+/**
+ * Contract-shaped storage mock (per siyuan/kernel.d.ts):
+ * - `get()` rejects while the file does not exist;
+ * - `list(".")` reports file existence;
+ * - `put()` persists the payload (optionally failing).
+ */
 function mockApi(options: {
-  stored?: string;
-  getImpl?: (key: string) => Promise<{ json: () => Promise<unknown> }>;
   putImpl?: (key: string, value: string) => Promise<void>;
-}): { api: kernel.ISiyuan; storage: MockStorage; warn: ReturnType<typeof vi.fn> } {
-  const storedPayload = options.stored;
-  const storage: MockStorage = {
-    get: vi.fn(
-      options.getImpl ??
-        (async () => ({
-          json: async () => {
-            if (storedPayload === undefined) {
-              throw new Error("missing key");
-            }
-            return JSON.parse(storedPayload) as unknown;
-          },
-        })),
-    ),
-    put: vi.fn(
-      options.putImpl ?? (async () => undefined),
-    ),
+} = {}): {
+  api: kernel.ISiyuan;
+  setPayload: (value: string | undefined) => void;
+  getPayload: () => string | undefined;
+  storage: {
+    get: ReturnType<typeof vi.fn>;
+    list: ReturnType<typeof vi.fn>;
+    put: ReturnType<typeof vi.fn>;
   };
+  warn: ReturnType<typeof vi.fn>;
+} {
+  let payload: string | undefined;
+  const get = vi.fn(async () => {
+    if (payload === undefined) {
+      throw new Error("file does not exist");
+    }
+    return {
+      json: async () => JSON.parse(payload!) as unknown,
+    };
+  });
+  const list = vi.fn(async () =>
+    payload === undefined ? [] : [AUDIT_FILE],
+  );
+  const put = vi.fn(
+    options.putImpl ??
+      (async (_key: string, value: string) => {
+        payload = value;
+      }),
+  );
   const warn = vi.fn(async () => undefined);
   const api = {
-    storage,
+    storage: { get, list, put },
     logger: { warn },
   } as unknown as kernel.ISiyuan;
-  return { api, storage, warn };
+  return { api, setPayload: (v) => (payload = v), getPayload: () => payload, storage: { get, list, put }, warn };
 }
 
 function auditEnabledPolicy(): PluginPolicy {
@@ -51,29 +68,23 @@ function entry(operation: string): Omit<AuditEntry, "timestamp"> {
 }
 
 describe("AuditStore durability contract", () => {
-  it("serializes concurrent records so no entry is lost", async () => {
-    const { api, storage } = mockApi({});
+  it("writes the first entry when the log file does not exist yet", async () => {
+    const { api, storage, warn } = mockApi();
     const store = new AuditStore(api, auditEnabledPolicy);
-    // Read-modify-write state: get returns whatever put last persisted, with
-    // a delay on the first read so both records overlap in time.
-    let payload: string | undefined;
-    storage.put.mockImplementation(async (_key: string, value: string) => {
-      payload = value;
-    });
-    let getCalls = 0;
-    storage.get.mockImplementation(async () => {
-      getCalls += 1;
-      const seq = getCalls;
-      await new Promise((resolve) => setTimeout(resolve, seq === 1 ? 20 : 1));
-      return {
-        json: async () => {
-          if (payload === undefined) {
-            throw new Error("missing key");
-          }
-          return JSON.parse(payload) as unknown;
-        },
-      };
-    });
+    await store.record(entry("create"));
+    expect(storage.put).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse(
+      storage.put.mock.calls[0]![1] as string,
+    ) as AuditEntry[];
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]!.operation).toBe("create");
+    expect(store.writeFailureCount).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("serializes concurrent records so no entry is lost", async () => {
+    const { api, storage } = mockApi();
+    const store = new AuditStore(api, auditEnabledPolicy);
     await Promise.all([
       store.record(entry("create")),
       store.record(entry("append")),
@@ -87,34 +98,37 @@ describe("AuditStore durability contract", () => {
     ]);
   });
 
-  it("treats a missing log as empty and writes the first entry", async () => {
-    const { api, storage } = mockApi({ stored: undefined });
+  it("does not overwrite history when the read fails but the file exists", async () => {
+    const { api, storage, getPayload, warn } = mockApi();
     const store = new AuditStore(api, auditEnabledPolicy);
-    await store.record(entry("create"));
-    expect(storage.put).toHaveBeenCalledTimes(1);
-    const persisted = JSON.parse(
-      storage.put.mock.calls[0]![1] as string,
-    ) as AuditEntry[];
-    expect(persisted).toHaveLength(1);
-    expect(persisted[0]!.operation).toBe("create");
-  });
-
-  it("does not overwrite history when the storage read fails", async () => {
-    const { api, storage, warn } = mockApi({});
+    // Seed one real entry so the file exists on "disk".
+    await store.record(entry("seed"));
+    const onDisk = getPayload();
+    expect(onDisk).toBeDefined();
+    // Now the read itself fails although the file exists (transport fault).
     storage.get.mockImplementation(async () => {
       throw new Error("storage transport failure");
     });
+    await store.record(entry("create"));
+    expect(storage.put).toHaveBeenCalledTimes(1); // only the seed write
+    expect(store.writeFailureCount).toBe(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(getPayload()).toBe(onDisk); // history untouched
+  });
+
+  it("preserves a corrupt existing log instead of replacing it", async () => {
+    const { api, storage, setPayload, getPayload, warn } = mockApi();
+    setPayload("{ this is not json");
     const store = new AuditStore(api, auditEnabledPolicy);
     await store.record(entry("create"));
-    // Read failure ≠ empty log: nothing may be written back, otherwise a
-    // transient fault would replace the whole history with one entry.
     expect(storage.put).not.toHaveBeenCalled();
     expect(store.writeFailureCount).toBe(1);
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(getPayload()).toBe("{ this is not json"); // untouched
   });
 
   it("keeps the tool call succeeding when persistence fails, and counts it", async () => {
-    const { api, storage, warn } = mockApi({
+    const { api, warn } = mockApi({
       putImpl: async () => {
         throw new Error("disk full");
       },
@@ -126,7 +140,7 @@ describe("AuditStore durability contract", () => {
   });
 
   it("skips records entirely when audit is disabled", async () => {
-    const { api, storage } = mockApi({});
+    const { api, storage } = mockApi();
     const policy = clonePolicy(DEFAULT_POLICY);
     policy.audit.enabled = false;
     const store = new AuditStore(api, () => policy);
@@ -144,19 +158,20 @@ describe("AuditStore durability contract", () => {
         timestamp: new Date(Date.now() - 3_600_000 + index).toISOString(),
       }),
     );
-    let payload: string | undefined = JSON.stringify(seeded);
-    const { api, storage } = mockApi({});
-    storage.put.mockImplementation(async (_key: string, value: string) => {
-      payload = value;
-    });
+    const payloadRef = { value: JSON.stringify(seeded) };
+    const { api, storage } = mockApi();
     storage.get.mockImplementation(async () => ({
-      json: async () => JSON.parse(payload!) as unknown,
+      json: async () => JSON.parse(payloadRef.value) as unknown,
     }));
+    storage.list.mockImplementation(async () => [AUDIT_FILE]);
+    storage.put.mockImplementation(async (_key: string, value: string) => {
+      payloadRef.value = value;
+    });
     const store = new AuditStore(api, auditEnabledPolicy);
     for (let index = 0; index < 5; index += 1) {
       await store.record(entry(`new-${index}`));
     }
-    const persisted = JSON.parse(payload!) as AuditEntry[];
+    const persisted = JSON.parse(payloadRef.value) as AuditEntry[];
     expect(persisted).toHaveLength(2000);
     expect(persisted.at(-1)!.operation).toBe("new-4");
     expect(persisted.some((item) => item.operation === "seed-0")).toBe(false);

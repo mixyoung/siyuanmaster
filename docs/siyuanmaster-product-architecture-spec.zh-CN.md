@@ -22,7 +22,7 @@
 | 内部名称 | 职责 |
 |---|---|
 | **Access Boundary（访问边界）** | 笔记本允许/禁止名单、操作级允许/需确认/禁止、文档树权限继承（当前=笔记本决策下沉）、标签策略、审计（无正文）、插件 Agent capability 注册与 `/mcp` 暴露 |
-| **Safe Write Transaction（安全写事务，`SafeWriteTxn`）** | 写前快照 → 确认 → 执行前状态复核 → 只执行一次 → 回读验证 → 无正文审计；快照失败停止；结果语义三分：`state_changed`（未写入）/ `outcome_unknown`（可能已写入，先回读、禁止自动重试）/ `verification_failed`（已执行但回读不符）；错误保留 `txnId` 与目标 ID |
+| **Safe Write Transaction（安全写事务，`SafeWriteTxn`）** | 写前快照 → 确认 → 执行前状态复核 → 只执行一次 → 回读验证 → 无正文审计；快照失败停止；结果语义三分：`state_changed`（未写入）/ `outcome_unknown`（可能已写入，先回读、禁止自动重试）/ `verification_failed`（已执行但回读不符）；错误保留 `txnId` 与目标 ID；`outcome_unknown`/`verification_failed` 在审计中记为 `failed`（尝试失败），绝不记为 `denied`（策略拒绝）。非事务写入（`create_note`/`append_note`/`save_memory`）正文 API 失败按“结果不确定”上报并要求先回读，标签失败返回部分成功（`tagStatus="failed"`）且审计带部分成功说明 |
 | **Capability Catalog（能力目录）** | `catalog/capabilities.json` 单一事实源；Rust 内嵌解析；TS 生成 + 新鲜度门禁 |
 | **Wiki Template Catalog（Wiki 模板目录）** | `catalog/wiki-templates.json` 单一语义事实源；六类中英模板、版本、创建门槛、预览渲染和只读结构校验 |
 | **Local Gateway（本机网关 `siyuanmasterd`）** | 健康检查、能力目录、范围令牌校验、审计查询、事务预览/确认骨架；默认拒绝 |
@@ -129,7 +129,7 @@
 | 写标签先读后追加去重 | Access Boundary | P0 保留 | `mergeTags` | 已实现 |
 | 文档树有界浏览 | Access Boundary | P0 保留 | `list_document_tree` | 已实现 |
 | 两阶段重命名/移动 | Access Boundary | P0 保留 | `rename_note` / `move_note` | 已实现（结构预演；**未**走 SafeWriteTxn 状态机） |
-| 审计（无正文） | Access Boundary | P0 保留 | `src/audit.ts` + `core::audit` | 已实现；追加串行化（并发不丢记录），存储读故障≠空日志（读失败不回写，防止瞬时故障抹掉历史），持久化失败不阻断工具并以 `writeFailures` 计数经 `get_audit_log` 反馈 |
+| 审计（无正文） | Access Boundary | P0 保留 | `src/audit.ts` + `core::audit` | 已实现；追加串行化（并发不丢记录）；读取分支按存储契约三分——文件不存在（`get()` 抛错且目录列表无该文件）视为空日志可新建，文件存在但读失败或内容损坏则拒绝回写以防覆盖历史；持久化失败不阻断工具并以 `writeFailures` 计数经 `get_audit_log` 反馈 |
 | 品牌展示与 package 名 | — | P0 | plugin/package/README/i18n | 已实现 |
 | 技术 ID 过渡策略 | — | P0 | plugin.json + catalog.compatibility | 已实现 |
 | 未来 ID 切换纯决策 | — | P0 | `src/migration.ts` | 已实现（纯函数；**未**接 onload） |
@@ -280,7 +280,7 @@ catalog/capabilities.json
 | `validate_wiki_template` | 只读检查；验证 H1、必需 H2 的缺失/重复/顺序、可选预期标题与元数据枚举；忽略代码围栏中的伪标题，不写笔记。 |
 | `plan_source_ingest` | 只读预演；读取精确 Raw 与注册表元数据，输出重复/复核/已摄取/更新/候选/回退/创建门槛/新建/保留 Raw 状态、有序操作计划及结构化影响摘要；不读正文、不执行写入，`readyForWorkflow` 也不代表写授权。 |
 | `validate_pdf_conversion` | 只读校验调用方提交的 Markdown 转换产出（标题/表格/代码围栏/截断标记计数）；不接触 PDF 原件，不做原件视觉/内容忠实度验证 |
-| `update_note` | 同上：快照/确认/复核/回读；**无**跨调用 preview token；**无**用户可见全量 diff；非 committed 终态错误码三分（见 `edit_block`）；正文提交后标签失败以成功返回并附 `tagStatus="failed"`/`tagError`，标签经 `apply_tags` 单独补 |
+| `update_note` | 同上：快照/确认/复核/回读；**无**跨调用 preview token；**无**用户可见全量 diff；非 committed 终态错误码三分（见 `edit_block`）；正文经事务回读验证后标签失败以成功返回并附 `tagStatus="failed"`/`tagError`（`create/append/save_memory` 的对应提示明确其正文仅“API 返回成功、无独立回读”），标签经 `apply_tags` 单独补 |
 
 ### 10.1 思源 3.8.1 历史实机证据（加入 PDF 校验能力前，2025-08 27 项目录时期）
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  computePolicyFingerprint,
   DEFAULT_POLICY,
   isNotebookAllowed,
   normalizePolicy,
@@ -82,3 +83,45 @@ describe("document path normalization", () => {
     );
   });
 });
+
+describe("policy fingerprint", () => {
+  it("is deterministic and idempotent for an already normalized policy", async () => {
+    const policy = normalizePolicy(DEFAULT_POLICY);
+    const first = await computePolicyFingerprint(policy);
+    const second = await computePolicyFingerprint(normalizePolicy(policy));
+    expect(first).toBe(second);
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("distinguishes different notebook ID sets with the same count", async () => {
+    const base = normalizePolicy(DEFAULT_POLICY);
+    const a = normalizePolicy({
+      ...base,
+      access: {
+        ...base.access,
+        selectedNotebookIds: ["20260101000000-aaaaaaa"],
+      },
+    });
+    const b = normalizePolicy({
+      ...base,
+      access: {
+        ...base.access,
+        selectedNotebookIds: ["20260101000000-bbbbbbb"],
+      },
+    });
+    expect(await computePolicyFingerprint(a)).not.toBe(
+      await computePolicyFingerprint(b),
+    );
+  });
+
+  it("distinguishes operation decisions with identical access settings", async () => {
+    const base = normalizePolicy(DEFAULT_POLICY);
+    const denyUpdate = normalizePolicy({
+      ...base,
+      operations: { ...base.operations, update: "deny" },
+    });
+    expect(await computePolicyFingerprint(base)).not.toBe(
+      await computePolicyFingerprint(denyUpdate),
+    );
+  });
+})

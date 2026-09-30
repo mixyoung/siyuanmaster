@@ -2,6 +2,7 @@ import type * as kernel from "siyuan/kernel";
 import { AuditStore } from "./audit";
 import {
   clonePolicy,
+  computePolicyFingerprint,
   DEFAULT_POLICY,
   isNotebookAllowed,
   normalizePolicy,
@@ -543,12 +544,16 @@ class SiYuanMasterKernelPlugin {
     };
   }
 
-  private status(): Record<string, unknown> {
+  private async status(): Promise<Record<string, unknown>> {
     return {
       ready: true,
       product: "siyuanmaster",
       technicalId: "siyuanmaster",
       toolCount: this.registeredCapabilities.length,
+      /** SHA-256 over the canonical JSON of the normalized policy. The
+       * settings UI compares this after reload so "confirmed effective"
+       * covers the full policy, not just mode + count. */
+      policyFingerprint: await computePolicyFingerprint(this.policy),
       accessMode: this.policy.access.mode,
       selectedNotebookCount:
         this.policy.access.selectedNotebookIds.length,
@@ -758,12 +763,24 @@ class SiYuanMasterKernelPlugin {
   ): Promise<Record<string, unknown>> {
     try {
       const result = await task();
+      const resultRecord =
+        result && typeof result === "object"
+          ? (result as Record<string, unknown>)
+          : undefined;
       const tagCount =
-        result &&
-        typeof result === "object" &&
-        "addedTags" in result &&
-        Array.isArray((result as { addedTags?: unknown }).addedTags)
-          ? (result as { addedTags: unknown[] }).addedTags.length
+        resultRecord &&
+        "addedTags" in resultRecord &&
+        Array.isArray(resultRecord.addedTags)
+          ? (resultRecord.addedTags as unknown[]).length
+          : undefined;
+      // Partial success must be visible in the audit log: the body write
+      // completed but tags failed — retrievable only via apply_tags.
+      const partialTagFailure =
+        resultRecord?.tagStatus === "failed"
+          ? {
+              message:
+                "body write completed; tag update failed (partial success — retry tags via apply_tags)",
+            }
           : undefined;
       await this.audit.record(
         {
@@ -771,6 +788,7 @@ class SiYuanMasterKernelPlugin {
           outcome: "allowed",
           ...metadata,
           tagCount,
+          ...partialTagFailure,
         },
         isReadOperation,
       );
@@ -778,11 +796,17 @@ class SiYuanMasterKernelPlugin {
     } catch (error) {
       const violation =
         error instanceof PolicyViolation ? error : undefined;
+      // Uncertain outcomes (write possibly applied / executed but
+      // verification failed) are attempt failures, NOT policy denials —
+      // auditing them as "denied" would mislead post-hoc review.
       const outcome: AuditEntry["outcome"] = violation
         ? violation.code === "confirmation_required" ||
           violation.code === "tag_decision_required"
           ? "confirmation_required"
-          : "denied"
+          : violation.code === "outcome_unknown" ||
+              violation.code === "verification_failed"
+            ? "failed"
+            : "denied"
         : "failed";
       const message =
         error instanceof Error ? error.message : String(error);
@@ -869,17 +893,42 @@ class SiYuanMasterKernelPlugin {
   }
 
   /**
+   * Non-transactional body writes (create/append/save_memory) have no
+   * snapshot/readback protection. If the kernel API errors after already
+   * committing (e.g. a transport failure on the response), the failure is
+   * reported as outcome-uncertain so callers read back before any retry
+   * instead of blindly repeating a create/append.
+   */
+  private async runBodyWrite<T>(
+    action: () => Promise<T>,
+    what: string,
+  ): Promise<T> {
+    try {
+      return await action();
+    } catch (error) {
+      throw new Error(
+        `${what} result uncertain - the kernel may have committed it; read back the target before any retry: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
    * Post-body-write tag application. The body write has already succeeded
-   * (and, for transactional tools, been verified by readback) when this
-   * runs, so a tag failure must NOT surface as a plain tool failure — the
-   * caller would reasonably retry the body write and duplicate it. Instead
-   * report partial success: body committed, tags failed, retry tags only
-   * via apply_tags.
+   * when this runs, so a tag failure must NOT surface as a plain tool
+   * failure — the caller would reasonably retry the body write and
+   * duplicate it. Instead report partial success: body written, tags
+   * failed, retry tags only via apply_tags. `bodyVerified` distinguishes
+   * tools whose body went through SafeWriteTxn readback verification
+   * (update_note) from create/append/save_memory, whose body write is only
+   * known to have returned success from the kernel API.
    */
   private async applyTagsAfterBodyWrite(
     documentId: string,
     operation: TaggableOperation,
     taggingInput: unknown,
+    bodyVerified: boolean,
   ): Promise<{
     addedTags: string[];
     reason: string;
@@ -895,8 +944,9 @@ class SiYuanMasterKernelPlugin {
     } catch (error) {
       return {
         addedTags: [],
-        reason:
-          "body write committed and verified; tag update failed — retry tags separately with apply_tags, do not repeat the body write",
+        reason: bodyVerified
+          ? "body write committed and verified by readback; tag update failed — retry tags separately with apply_tags, do not repeat the body write"
+          : "body write completed (kernel API returned success; no independent readback); tag update failed — retry tags separately with apply_tags, do not repeat the body write",
         tagStatus: "failed",
         tagError:
           error instanceof Error ? error.message : String(error),
@@ -1364,19 +1414,24 @@ class SiYuanMasterKernelPlugin {
               "create",
               input.tagging,
             );
-            const documentId = await this.client.createDocument({
-              notebookId: notebook.id,
-              title,
-              parentPath:
-                typeof input.parentPath === "string"
-                  ? input.parentPath
-                  : undefined,
-              markdown: content,
-            });
+            const documentId = await this.runBodyWrite(
+              () =>
+                this.client.createDocument({
+                  notebookId: notebook.id,
+                  title,
+                  parentPath:
+                    typeof input.parentPath === "string"
+                      ? input.parentPath
+                      : undefined,
+                  markdown: content,
+                }),
+              "create_note body write",
+            );
             const tagResult = await this.applyTagsAfterBodyWrite(
               documentId,
               "create",
               input.tagging,
+              false,
             );
             return {
               documentId,
@@ -1440,14 +1495,15 @@ class SiYuanMasterKernelPlugin {
               input.tagging,
               context.document.id,
             );
-            await this.client.appendMarkdown(
-              context.document.id,
-              content,
+            await this.runBodyWrite(
+              () => this.client.appendMarkdown(context.document.id, content),
+              "append_note body write",
             );
             const tagResult = await this.applyTagsAfterBodyWrite(
               context.document.id,
               "append",
               input.tagging,
+              false,
             );
             return {
               documentId: context.document.id,
@@ -1585,6 +1641,7 @@ class SiYuanMasterKernelPlugin {
               context.document.id,
               "update",
               input.tagging,
+              true,
             );
             return {
               documentId: context.document.id,
@@ -3734,14 +3791,16 @@ class SiYuanMasterKernelPlugin {
                 input.tagging,
                 context.document.id,
               );
-              await this.client.appendMarkdown(
-                context.document.id,
-                markdown,
+              await this.runBodyWrite(
+                () =>
+                  this.client.appendMarkdown(context.document.id, markdown),
+                "save_memory body write (append)",
               );
               const tagResult = await this.applyTagsAfterBodyWrite(
                 context.document.id,
                 "memory",
                 input.tagging,
+                false,
               );
               return {
                 mode: "append",
@@ -3761,19 +3820,24 @@ class SiYuanMasterKernelPlugin {
               "memory",
               input.tagging,
             );
-            const createdId = await this.client.createDocument({
-              notebookId: notebook.id,
-              title,
-              parentPath:
-                typeof input.parentPath === "string"
-                  ? input.parentPath
-                  : undefined,
-              markdown,
-            });
+            const createdId = await this.runBodyWrite(
+              () =>
+                this.client.createDocument({
+                  notebookId: notebook.id,
+                  title,
+                  parentPath:
+                    typeof input.parentPath === "string"
+                      ? input.parentPath
+                      : undefined,
+                  markdown,
+                }),
+              "save_memory body write (create)",
+            );
             const tagResult = await this.applyTagsAfterBodyWrite(
               createdId,
               "memory",
               input.tagging,
+              false,
             );
             return {
               mode: "create",

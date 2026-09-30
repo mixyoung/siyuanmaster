@@ -12,9 +12,10 @@ import type { AuditEntry, PluginPolicy } from "./types";
  * Durability contract (best-effort, explicitly surfaced):
  * - Appends are serialized through a single promise chain so concurrent
  *   tool calls cannot read-modify-write over each other and drop entries.
- * - A storage READ failure (transport/API error) is distinct from an empty
- *   log: on read failure nothing is written back, so a transient fault can
- *   never replace the existing history with a single-entry log.
+ * - Read branches follow the storage contract (`get()` rejects when the
+ *   file does not exist): a genuinely absent log is an empty log; a read
+ *   failure on an existing file, or an existing-but-corrupt payload, never
+ *   triggers a write-back, so history is never replaced by a single entry.
  * - A storage WRITE failure does not fail the audited tool call; the plugin
  *   stays available and the miss is reported via logger.warn plus the
  *   `writeFailures` counter exposed through get_audit_log.
@@ -86,19 +87,46 @@ export class AuditStore {
   }
 
   /**
-   * Reads the stored log. Throws when the storage read itself fails — the
-   * caller must not treat that as an empty log and overwrite history.
-   * A missing or non-array payload IS a legitimate empty log.
+   * Reads the stored log. Branches follow the storage contract
+   * (`get()` rejects when the file does not exist):
+   * - `get()` rejects and the file is genuinely absent → empty log
+   *   (legitimate first run; the caller may create the log).
+   * - `get()` rejects but the file exists (directory listing) → transport
+   *   failure; throws so nothing is written back over the history.
+   * - `get()` resolves but the payload cannot be parsed → the existing log
+   *   is corrupt; throws so it is preserved rather than replaced.
    */
   private async readExisting(): Promise<AuditEntry[]> {
-    const stored = await this.api.storage.get(AUDIT_STORAGE_KEY);
+    let stored: Awaited<ReturnType<kernel.ISiyuan["storage"]["get"]>>;
+    try {
+      stored = await this.api.storage.get(AUDIT_STORAGE_KEY);
+    } catch {
+      if (await this.auditFileExists()) {
+        throw new Error(
+          "audit storage read failed while the log file exists",
+        );
+      }
+      return [];
+    }
     let parsed: unknown;
     try {
       parsed = await stored.json();
     } catch {
-      // Missing key / empty payload → empty log (legitimate first run).
-      return [];
+      throw new Error(
+        "stored audit log is unreadable (corrupt); refusing to overwrite",
+      );
     }
     return normalizeAuditEntries(parsed);
+  }
+
+  /** Best-effort existence probe used to separate "missing" from "read
+   * failure". Falls back to "missing" when listing is unavailable. */
+  private async auditFileExists(): Promise<boolean> {
+    try {
+      const entries = await this.api.storage.list(".");
+      return entries.some((entry) => entry.name === AUDIT_STORAGE_KEY);
+    } catch {
+      return false;
+    }
   }
 }
