@@ -15,6 +15,7 @@
     "build": "pnpm run generate && pnpm run check:catalog && pnpm run typecheck && pnpm run build:package && pnpm run test"
   },
   "devDependencies": {
+    "@types/node": "^24.19.1",
     "archiver": "^7.0.1",
     "esbuild": "^0.25.6",
     "siyuan": "1.2.4",

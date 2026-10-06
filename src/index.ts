@@ -81,6 +81,9 @@ export default class SiYuanMasterPlugin extends Plugin {
   private dockElement?: HTMLElement;
   private dockEventsBound = false;
   private bootstrapped = false;
+  private policySyncQueue: Promise<void> = Promise.resolve();
+  private policySyncState: "syncing" | "confirmed" | "failed" = "syncing";
+  private policySyncFailure = "策略同步失败";
 
   onload(): void {
     this.registerDock();
@@ -92,15 +95,13 @@ export default class SiYuanMasterPlugin extends Plugin {
     if (!this.bootstrapped) {
       return;
     }
-    await this.loadPolicy();
     await this.syncKernelPolicy();
     this.renderDock();
   }
 
   private async bootstrap(): Promise<void> {
     try {
-      await Promise.all([this.loadPolicy(), this.refreshNotebooks()]);
-      await this.syncKernelPolicy();
+      await Promise.all([this.syncKernelPolicy(), this.refreshNotebooks()]);
       this.bootstrapped = true;
       this.renderDock();
     } catch (error) {
@@ -192,12 +193,14 @@ export default class SiYuanMasterPlugin extends Plugin {
     const selected = this.policy.access.selectedNotebookIds.length;
     const status = error
       ? "异常"
-      : this.bootstrapped
+      : this.policySyncState === "confirmed"
         ? "策略已就绪"
-        : "正在同步";
-    const statusTone = error
+        : this.policySyncState === "failed"
+          ? this.policySyncFailure
+          : "正在同步";
+    const statusTone = error || this.policySyncState === "failed"
       ? "danger"
-      : this.bootstrapped
+      : this.policySyncState === "confirmed"
         ? "ready"
         : "pending";
 
@@ -334,7 +337,7 @@ export default class SiYuanMasterPlugin extends Plugin {
 
   private async refreshAll(): Promise<void> {
     try {
-      await Promise.all([this.loadPolicy(), this.refreshNotebooks()]);
+      await Promise.all([this.syncKernelPolicy(), this.refreshNotebooks()]);
       this.renderDock();
       showMessage(`${PRODUCT_DISPLAY_NAME}状态已刷新`, 2500, "info");
     } catch (error) {
@@ -377,25 +380,40 @@ export default class SiYuanMasterPlugin extends Plugin {
     this.notebooks = await listNotebooks();
   }
 
-  private async persistPolicy(policy: PluginPolicy): Promise<void> {
-    this.policy = normalizePolicy(policy);
-    await this.saveData(POLICY_STORAGE_KEY, this.policy);
-    // Saved ≠ effective: the kernel keeps its own in-memory policy copy and
-    // must confirm the reload. A failure here propagates so the UI never
-    // claims immediate effect while the kernel may still use the old policy.
-    await this.confirmKernelPolicyReloaded();
-    this.renderDock();
+  private enqueuePolicySync(task: () => Promise<void>): Promise<void> {
+    const pending = this.policySyncQueue.then(async () => {
+      this.policySyncState = "syncing";
+      this.renderDock();
+      try {
+        await task();
+        this.policySyncState = "confirmed";
+      } catch (error) {
+        this.policySyncState = "failed";
+        this.policySyncFailure = error instanceof KernelPolicyReloadError
+          ? "已保存，内核未确认"
+          : "策略同步失败";
+        throw error;
+      } finally {
+        this.renderDock();
+      }
+    });
+    // A failed confirmation must not prevent a later save or background retry.
+    this.policySyncQueue = pending.catch(() => undefined);
+    return pending;
   }
 
-  /**
-   * Reloads the kernel policy RPC and verifies the kernel's effective
-   * policy FINGERPRINT against the just-saved policy. A fingerprint covers
-   * the full normalized policy (notebook ID set, operation decisions,
-   * tagging, safety) — matching mode + count alone would let a stale or
-   * default-fallback policy be confirmed as effective. Throws
-   * KernelPolicyReloadError when the kernel did not confirm.
-   */
-  private async confirmKernelPolicyReloaded(): Promise<void> {
+  private async persistPolicy(policy: PluginPolicy): Promise<void> {
+    const snapshot = clonePolicy(normalizePolicy(policy));
+    await this.enqueuePolicySync(async () => {
+      await this.saveData(POLICY_STORAGE_KEY, snapshot);
+      this.policy = snapshot;
+      await this.confirmKernelPolicyReloaded(snapshot);
+    });
+  }
+
+  /** Confirm this operation's snapshot, never the mutable UI policy. */
+  private async confirmKernelPolicyReloaded(expected: PluginPolicy): Promise<void> {
+    const expectedFingerprint = await computePolicyFingerprint(expected);
     let status: Record<string, unknown>;
     try {
       status = (await this.kernel.rpc.call.reloadPolicy()) as Record<
@@ -409,7 +427,6 @@ export default class SiYuanMasterPlugin extends Plugin {
         }`,
       );
     }
-    const expectedFingerprint = await computePolicyFingerprint(this.policy);
     if (
       typeof status?.policyFingerprint !== "string" ||
       status.policyFingerprint !== expectedFingerprint
@@ -420,10 +437,13 @@ export default class SiYuanMasterPlugin extends Plugin {
     }
   }
 
-  /** Background sync (bootstrap/data change): reload best-effort, warn loudly. */
+  /** Bootstrap, data changes and refresh share the save/confirmation queue. */
   private async syncKernelPolicy(): Promise<void> {
     try {
-      await this.confirmKernelPolicyReloaded();
+      await this.enqueuePolicySync(async () => {
+        await this.loadPolicy();
+        await this.confirmKernelPolicyReloaded(clonePolicy(this.policy));
+      });
     } catch (error) {
       console.warn(
         `[${this.name}] kernel policy reload not confirmed; kernel may keep serving the previous policy`,

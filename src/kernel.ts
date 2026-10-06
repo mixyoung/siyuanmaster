@@ -26,6 +26,7 @@ import {
 } from "./document-access";
 import { EditBlockError, performEditBlock } from "./edit-block";
 import { buildDocumentTree } from "./document-tree";
+import { matchesDocumentReadback } from "./document-readback";
 import {
   assertSiyuanId,
   BlockRecord,
@@ -108,8 +109,10 @@ import {
 } from "./write-transaction";
 
 const MAX_MARKDOWN_LENGTH = 1_000_000;
-const STRUCTURE_VERIFY_ATTEMPTS = 8;
-const STRUCTURE_VERIFY_DELAY_MS = 125;
+const STRUCTURE_VERIFY_TIMEOUT_MS = 5000;
+const STRUCTURE_VERIFY_DELAY_MS = 250;
+const STRUCTURE_VERIFY_ATTEMPTS =
+  Math.ceil(STRUCTURE_VERIFY_TIMEOUT_MS / STRUCTURE_VERIFY_DELAY_MS) + 1;
 
 class PolicyViolation extends Error {
   constructor(
@@ -545,6 +548,7 @@ class SiYuanMasterKernelPlugin {
   }
 
   private async status(): Promise<Record<string, unknown>> {
+    const policy = clonePolicy(this.policy);
     return {
       ready: true,
       product: "siyuanmaster",
@@ -553,12 +557,12 @@ class SiYuanMasterKernelPlugin {
       /** SHA-256 over the canonical JSON of the normalized policy. The
        * settings UI compares this after reload so "confirmed effective"
        * covers the full policy, not just mode + count. */
-      policyFingerprint: await computePolicyFingerprint(this.policy),
-      accessMode: this.policy.access.mode,
+      policyFingerprint: await computePolicyFingerprint(policy),
+      accessMode: policy.access.mode,
       selectedNotebookCount:
-        this.policy.access.selectedNotebookIds.length,
-      taggingMode: this.policy.tagging.mode,
-      safety: this.policy.safety,
+        policy.access.selectedNotebookIds.length,
+      taggingMode: policy.tagging.mode,
+      safety: policy.safety,
       capabilities: {
         resolveDocument: true,
         readNoteSegments: true,
@@ -569,8 +573,8 @@ class SiYuanMasterKernelPlugin {
         wikiTemplates: true,
         pdfConversionValidation: true,
         sourceIngestPlan: true,
-        permissionInheritance: this.policy.safety.permissionInheritance,
-        referenceProtection: this.policy.safety.referenceProtection,
+        permissionInheritance: policy.safety.permissionInheritance,
+        referenceProtection: policy.safety.referenceProtection,
       },
     };
   }
@@ -796,20 +800,18 @@ class SiYuanMasterKernelPlugin {
     } catch (error) {
       const violation =
         error instanceof PolicyViolation ? error : undefined;
-      // Uncertain outcomes (write possibly applied / executed but
-      // verification failed) are attempt failures, NOT policy denials —
-      // auditing them as "denied" would mislead post-hoc review.
-      const outcome: AuditEntry["outcome"] = violation
-        ? violation.code === "confirmation_required" ||
-          violation.code === "tag_decision_required"
+      const outcome: AuditEntry["outcome"] =
+        violation?.code === "confirmation_required" ||
+        violation?.code === "tag_decision_required"
           ? "confirmation_required"
-          : violation.code === "outcome_unknown" ||
-              violation.code === "verification_failed"
-            ? "failed"
-            : "denied"
-        : "failed";
-      const message =
-        error instanceof Error ? error.message : String(error);
+          : violation?.code === "operation_denied" ||
+              violation?.code === "notebook_denied"
+            ? "denied"
+            : "failed";
+      const detail = error instanceof Error ? error.message : String(error);
+      const message = violation?.code === "state_changed"
+        ? `write not executed: ${detail}`
+        : detail;
       await this.audit.record(
         {
           operation,
@@ -893,11 +895,9 @@ class SiYuanMasterKernelPlugin {
   }
 
   /**
-   * Non-transactional body writes (create/append/save_memory) have no
-   * snapshot/readback protection. If the kernel API errors after already
-   * committing (e.g. a transport failure on the response), the failure is
-   * reported as outcome-uncertain so callers read back before any retry
-   * instead of blindly repeating a create/append.
+   * A non-transactional write API may commit before its response fails.
+   * Structural tools verify successful responses separately; API errors
+   * still require readback before retrying, just like body writes.
    */
   private async runBodyWrite<T>(
     action: () => Promise<T>,
@@ -906,8 +906,9 @@ class SiYuanMasterKernelPlugin {
     try {
       return await action();
     } catch (error) {
-      throw new Error(
-        `${what} result uncertain - the kernel may have committed it; read back the target before any retry: ${
+      throw new PolicyViolation(
+        "outcome_unknown",
+        `${what} result uncertain - the kernel may have committed it; do not auto-retry; read back the target before any retry: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -1497,7 +1498,7 @@ class SiYuanMasterKernelPlugin {
             );
             await this.runBodyWrite(
               () => this.client.appendMarkdown(context.document.id, content),
-              "append_note body write",
+              `append_note body write (documentId=${context.document.id})`,
             );
             const tagResult = await this.applyTagsAfterBodyWrite(
               context.document.id,
@@ -1572,12 +1573,12 @@ class SiYuanMasterKernelPlugin {
             );
             const requireConfirmation =
               this.policy.operations.update === "confirm";
-            const expectedHash = await computeContentHash(content);
             const txn = await runWriteTransaction({
               kind: "update_note",
               confirmed,
               requireConfirmation,
-              expectedReadbackHash: expectedHash,
+              verifyReadback: (observed) =>
+                matchesDocumentReadback(content, observed),
               io: {
                 snapshot: async () => {
                   const exported = await this.client.exportMarkdown(
@@ -1604,7 +1605,7 @@ class SiYuanMasterKernelPlugin {
                   const exported = await this.client.exportMarkdown(
                     context.document.id,
                   );
-                  return computeContentHash(exported.content);
+                  return exported.content;
                 },
               },
             });
@@ -2984,22 +2985,50 @@ class SiYuanMasterKernelPlugin {
     documentId: string,
     predicate: (document: BlockRecord) => boolean,
   ): Promise<BlockRecord> {
-    let latest: BlockRecord | undefined;
-    for (
-      let attempt = 0;
-      attempt < STRUCTURE_VERIFY_ATTEMPTS;
-      attempt += 1
+    const started = Date.now();
+    const deadline = started + STRUCTURE_VERIFY_TIMEOUT_MS;
+    let attempts = 0;
+    while (
+      attempts < STRUCTURE_VERIFY_ATTEMPTS &&
+      Date.now() < deadline
     ) {
-      latest = (await this.client.getDocumentContext(documentId))
-        .document;
+      attempts += 1;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      let latest: BlockRecord;
+      try {
+        const context = await Promise.race([
+          this.client.getDocumentContext(documentId),
+          new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error("Structural readback deadline exceeded")),
+              Math.max(0, Math.min(STRUCTURE_VERIFY_TIMEOUT_MS, deadline - Date.now())),
+            );
+          }),
+        ]);
+        if (Date.now() > deadline) {
+          throw new Error("Structural readback deadline exceeded");
+        }
+        latest = context.document;
+      } catch (error) {
+        throw new PolicyViolation(
+          "outcome_unknown",
+          `SiYuan accepted the operation but readback failed (documentId=${documentId}, attempts=${attempts}, elapsedMs=${Math.max(0, Date.now() - started)}); do not auto-retry; read back the target first: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+      }
       if (predicate(latest)) {
         return latest;
       }
-      await delay(STRUCTURE_VERIFY_DELAY_MS);
+      const remaining = deadline - Date.now();
+      if (attempts >= STRUCTURE_VERIFY_ATTEMPTS || remaining <= 0) break;
+      await delay(Math.min(STRUCTURE_VERIFY_DELAY_MS, remaining));
     }
     throw new PolicyViolation(
-      "state_changed",
-      "SiYuan accepted the operation but the expected document state could not be verified",
+      "verification_failed",
+      `SiYuan accepted the operation but the expected document state could not be verified (documentId=${documentId}, attempts=${attempts}, elapsedMs=${Math.max(0, Date.now() - started)}); do not auto-retry; read back the target first`,
     );
   }
 
@@ -3099,7 +3128,10 @@ class SiYuanMasterKernelPlugin {
       context.document.id,
     );
 
-    await this.client.renameDocument(context.document.id, newTitle);
+    await this.runBodyWrite(
+      () => this.client.renameDocument(context.document.id, newTitle),
+      `rename_note (documentId=${context.document.id})`,
+    );
     const after = await this.waitForStructureState(
       context.document.id,
       (document) =>
@@ -3384,7 +3416,10 @@ class SiYuanMasterKernelPlugin {
 
     const targetId =
       currentTargetParent?.document.id ?? preview.targetNotebookId;
-    await this.client.moveDocument(sourceContext.document.id, targetId);
+    await this.runBodyWrite(
+      () => this.client.moveDocument(sourceContext.document.id, targetId),
+      `move_note (documentId=${sourceContext.document.id})`,
+    );
     const expectedParentDirectory = currentTargetParent
       ? documentDirectory(currentTargetParent.document.path)
       : "/";
@@ -3794,7 +3829,7 @@ class SiYuanMasterKernelPlugin {
               await this.runBodyWrite(
                 () =>
                   this.client.appendMarkdown(context.document.id, markdown),
-                "save_memory body write (append)",
+                `save_memory body write (append, documentId=${context.document.id})`,
               );
               const tagResult = await this.applyTagsAfterBodyWrite(
                 context.document.id,
