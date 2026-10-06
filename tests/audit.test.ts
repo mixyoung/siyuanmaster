@@ -116,6 +116,52 @@ describe("AuditStore durability contract", () => {
     expect(getPayload()).toBe(onDisk); // history untouched
   });
 
+  it("does not overwrite history when both the read and existence probe fail", async () => {
+    const { api, storage, setPayload, getPayload, warn } = mockApi();
+    const onDisk = JSON.stringify([
+      { ...entry("seed"), timestamp: new Date().toISOString() },
+    ]);
+    setPayload(onDisk);
+    storage.get.mockRejectedValue(new Error("storage read unavailable"));
+    storage.list.mockRejectedValue(new Error("directory probe unavailable"));
+    const store = new AuditStore(api, auditEnabledPolicy);
+
+    await store.record(entry("create"));
+
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(getPayload()).toBe(onDisk);
+    expect(store.writeFailureCount).toBe(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["null", null],
+    ["object", { entries: [] }],
+    ["non-record array item", [null]],
+    ["missing timestamp", [{ operation: "seed", outcome: "allowed" }]],
+    ["invalid timestamp", [{ timestamp: "not-a-date", operation: "seed", outcome: "allowed" }]],
+    ["missing operation", [{ timestamp: "2026-10-04T00:00:00.000Z", outcome: "allowed" }]],
+    ["empty operation", [{ timestamp: "2026-10-04T00:00:00.000Z", operation: " ", outcome: "allowed" }]],
+    ["missing outcome", [{ timestamp: "2026-10-04T00:00:00.000Z", operation: "seed" }]],
+    ["invalid outcome", [{ timestamp: "2026-10-04T00:00:00.000Z", operation: "seed", outcome: "unknown" }]],
+    ["partially invalid array", [
+      { timestamp: "2026-10-04T00:00:00.000Z", operation: "seed", outcome: "allowed" },
+      { operation: "broken" },
+    ]],
+  ])("preserves a parseable log with an invalid structure: %s", async (_name, payload) => {
+    const { api, storage, setPayload, getPayload, warn } = mockApi();
+    const onDisk = JSON.stringify(payload);
+    setPayload(onDisk);
+    const store = new AuditStore(api, auditEnabledPolicy);
+
+    await store.record(entry("create"));
+
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(getPayload()).toBe(onDisk);
+    expect(store.writeFailureCount).toBe(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves a corrupt existing log instead of replacing it", async () => {
     const { api, storage, setPayload, getPayload, warn } = mockApi();
     setPayload("{ this is not json");
@@ -158,20 +204,13 @@ describe("AuditStore durability contract", () => {
         timestamp: new Date(Date.now() - 3_600_000 + index).toISOString(),
       }),
     );
-    const payloadRef = { value: JSON.stringify(seeded) };
-    const { api, storage } = mockApi();
-    storage.get.mockImplementation(async () => ({
-      json: async () => JSON.parse(payloadRef.value) as unknown,
-    }));
-    storage.list.mockImplementation(async () => [AUDIT_FILE]);
-    storage.put.mockImplementation(async (_key: string, value: string) => {
-      payloadRef.value = value;
-    });
+    const { api, setPayload, getPayload } = mockApi();
+    setPayload(JSON.stringify(seeded));
     const store = new AuditStore(api, auditEnabledPolicy);
     for (let index = 0; index < 5; index += 1) {
       await store.record(entry(`new-${index}`));
     }
-    const persisted = JSON.parse(payloadRef.value) as AuditEntry[];
+    const persisted = JSON.parse(getPayload()!) as AuditEntry[];
     expect(persisted).toHaveLength(2000);
     expect(persisted.at(-1)!.operation).toBe("new-4");
     expect(persisted.some((item) => item.operation === "seed-0")).toBe(false);

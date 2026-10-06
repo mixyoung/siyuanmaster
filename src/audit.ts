@@ -6,6 +6,26 @@ import {
 } from "./migration";
 import type { AuditEntry, PluginPolicy } from "./types";
 
+type AuditFileState = "present" | "missing" | "unknown";
+const AUDIT_OUTCOMES = new Set<AuditEntry["outcome"]>([
+  "allowed", "denied", "confirmation_required", "failed",
+]);
+
+function isCurrentAuditEntry(value: unknown): value is AuditEntry {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.timestamp === "string" &&
+    Number.isFinite(Date.parse(entry.timestamp)) &&
+    typeof entry.operation === "string" &&
+    entry.operation.trim().length > 0 &&
+    typeof entry.outcome === "string" &&
+    AUDIT_OUTCOMES.has(entry.outcome as AuditEntry["outcome"])
+  );
+}
+
 /**
  * Metadata-only audit store.
  *
@@ -86,27 +106,21 @@ export class AuditStore {
     }
   }
 
-  /**
-   * Reads the stored log. Branches follow the storage contract
-   * (`get()` rejects when the file does not exist):
-   * - `get()` rejects and the file is genuinely absent → empty log
-   *   (legitimate first run; the caller may create the log).
-   * - `get()` rejects but the file exists (directory listing) → transport
-   *   failure; throws so nothing is written back over the history.
-   * - `get()` resolves but the payload cannot be parsed → the existing log
-   *   is corrupt; throws so it is preserved rather than replaced.
-   */
+  /** Only a successful existence probe may establish an empty first-run log. */
   private async readExisting(): Promise<AuditEntry[]> {
     let stored: Awaited<ReturnType<kernel.ISiyuan["storage"]["get"]>>;
     try {
       stored = await this.api.storage.get(AUDIT_STORAGE_KEY);
     } catch {
-      if (await this.auditFileExists()) {
-        throw new Error(
-          "audit storage read failed while the log file exists",
-        );
+      const state = await this.auditFileState();
+      if (state === "missing") {
+        return [];
       }
-      return [];
+      throw new Error(
+        state === "present"
+          ? "audit storage read failed while the log file exists"
+          : "audit file existence is unknown; refusing to overwrite",
+      );
     }
     let parsed: unknown;
     try {
@@ -116,17 +130,30 @@ export class AuditStore {
         "stored audit log is unreadable (corrupt); refusing to overwrite",
       );
     }
+    // Legacy migration normalization is intentionally tolerant. Current
+    // history must pass validation before it can be cleaned and written back.
+    if (!Array.isArray(parsed) || !parsed.every(isCurrentAuditEntry)) {
+      throw new Error(
+        "stored audit log has an invalid structure; refusing to overwrite",
+      );
+    }
     return normalizeAuditEntries(parsed);
   }
 
-  /** Best-effort existence probe used to separate "missing" from "read
-   * failure". Falls back to "missing" when listing is unavailable. */
-  private async auditFileExists(): Promise<boolean> {
+  private async auditFileState(): Promise<AuditFileState> {
     try {
       const entries = await this.api.storage.list(".");
-      return entries.some((entry) => entry.name === AUDIT_STORAGE_KEY);
+      if (
+        !Array.isArray(entries) ||
+        entries.some((entry) => !entry || typeof entry.name !== "string")
+      ) {
+        return "unknown";
+      }
+      return entries.some((entry) => entry.name === AUDIT_STORAGE_KEY)
+        ? "present"
+        : "missing";
     } catch {
-      return false;
+      return "unknown";
     }
   }
 }

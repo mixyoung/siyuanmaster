@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@types/node':
+        specifier: ^24.19.1
+        version: 24.19.1
       archiver:
         specifier: ^7.0.1
         version: 7.0.1
@@ -22,18 +25,18 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.7
+        version: 3.2.7(@types/node@24.19.1)
 
 packages:
 
-  '@dop251/types-goja_nodejs-buffer@0.0.0-20260212111938-1f56ff5bcf14':
-    resolution: {integrity: sha512-+ZEK3z3RVSE9O7Ml8HoeLtYSI/yR2ifa7Ppabfjq5fW06Kf00PcUz6hjz2we1h9CxlhiI7pLglEy4+hTUYGsQA==}
+  '@dop251/types-goja_nodejs-buffer@0.0.0-20260918183711-b481721df8a2':
+    resolution: {integrity: sha512-RWaDBwsOPEtZhajOiOiMRIQYvQKZdtq9XrDhc49upOs3lIb5E9hj7AK90nUI9kI9qULQ4lDVvI94joTlDkH1Lg==}
 
-  '@dop251/types-goja_nodejs-global@0.0.0-20260212111938-1f56ff5bcf14':
-    resolution: {integrity: sha512-NYnSveyts20w79Qp+Cs6a8vyrP3+8QVisseCU/2F0rMXK/WmLvbQYmyjNFMlDbY8g3HcooTIB/2AwcwonabQEg==}
+  '@dop251/types-goja_nodejs-global@0.0.0-20260918183711-b481721df8a2':
+    resolution: {integrity: sha512-nE+7cM9ncPqboXC6jJ60AJJghVfIwN1iXT2E8lgzLJ2LM8b6BjteDU49jq03XAl+8IJG8AuID/pt3D7w5zcCjg==}
 
-  '@dop251/types-goja_nodejs-url@0.0.0-20260212111938-1f56ff5bcf14':
-    resolution: {integrity: sha512-RyxfUr5u0WOO0dV2/BxV+zJ2QwUqnIoSwIoPQcGHakWp8elJ/nSU86pUB9gSO77e2XHWZYAZvNN5tXa9yOXJaA==}
+  '@dop251/types-goja_nodejs-url@0.0.0-20260918183711-b481721df8a2':
+    resolution: {integrity: sha512-o4k1jM2mA4lvmdPYYbDeslXQlfFb+ezk5T4HplpRW0lBTmABDIgBV/tbdXAhIkcEtL5jcQJ3Kgnw+N9E/WMFQw==}
 
   '@esbuild/aix-ppc64@0.25.12':
     resolution: {integrity: sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA==}
@@ -505,6 +508,9 @@ packages:
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
 
+  '@types/node@24.19.1':
+    resolution: {integrity: sha512-aS3/DG0oM05K0RIXXP+hKjinGG5IgSSVGzswZxW3O0sS3pH4/fycXundUC9XsszgKCk4gHXylTEK6hyFxVxnoQ==}
+
   '@vitest/expect@3.2.7':
     resolution: {integrity: sha512-E8eBXaKibuvH2pSZErOjdVb5vF4PbKYcrnluBTYxEk1l/VhhwZg1kZQsdtjq+CsF5CFydf2Rdkz7jDHKSisi3w==}
 
@@ -965,6 +971,9 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  undici-types@7.24.6:
+    resolution: {integrity: sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg==}
+
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
 
@@ -1063,20 +1072,20 @@ packages:
     resolution: {integrity: sha512-zK7YHHz4ZXpW89AHXUPbQVGKI7uvkd3hzusTdotCg1UxyaVtg0zFJSTfW/Dq5f7OBBVnq6cZIaC8Ti4hb6dtCA==}
     engines: {node: '>= 14'}
 
-  zod@4.4.3:
-    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+  zod@4.6.5:
+    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
 
 snapshots:
 
-  '@dop251/types-goja_nodejs-buffer@0.0.0-20260212111938-1f56ff5bcf14':
+  '@dop251/types-goja_nodejs-buffer@0.0.0-20260918183711-b481721df8a2':
     dependencies:
-      '@dop251/types-goja_nodejs-global': 0.0.0-20260212111938-1f56ff5bcf14
+      '@dop251/types-goja_nodejs-global': 0.0.0-20260918183711-b481721df8a2
 
-  '@dop251/types-goja_nodejs-global@0.0.0-20260212111938-1f56ff5bcf14': {}
+  '@dop251/types-goja_nodejs-global@0.0.0-20260918183711-b481721df8a2': {}
 
-  '@dop251/types-goja_nodejs-url@0.0.0-20260212111938-1f56ff5bcf14':
+  '@dop251/types-goja_nodejs-url@0.0.0-20260918183711-b481721df8a2':
     dependencies:
-      '@dop251/types-goja_nodejs-global': 0.0.0-20260212111938-1f56ff5bcf14
+      '@dop251/types-goja_nodejs-global': 0.0.0-20260918183711-b481721df8a2
 
   '@esbuild/aix-ppc64@0.25.12':
     optional: true
@@ -1332,6 +1341,10 @@ snapshots:
 
   '@types/estree@1.0.9': {}
 
+  '@types/node@24.19.1':
+    dependencies:
+      undici-types: 7.24.6
+
   '@vitest/expect@3.2.7':
     dependencies:
       '@types/chai': 5.2.3
@@ -1340,13 +1353,13 @@ snapshots:
       chai: 5.3.3
       tinyrainbow: 2.0.0
 
-  '@vitest/mocker@3.2.7(vite@7.3.6)':
+  '@vitest/mocker@3.2.7(vite@7.3.6(@types/node@24.19.1))':
     dependencies:
       '@vitest/spy': 3.2.7
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 7.3.6
+      vite: 7.3.6(@types/node@24.19.1)
 
   '@vitest/pretty-format@3.2.7':
     dependencies:
@@ -1762,10 +1775,10 @@ snapshots:
 
   siyuan@1.2.4:
     dependencies:
-      '@dop251/types-goja_nodejs-buffer': 0.0.0-20260212111938-1f56ff5bcf14
-      '@dop251/types-goja_nodejs-global': 0.0.0-20260212111938-1f56ff5bcf14
-      '@dop251/types-goja_nodejs-url': 0.0.0-20260212111938-1f56ff5bcf14
-      zod: 4.4.3
+      '@dop251/types-goja_nodejs-buffer': 0.0.0-20260918183711-b481721df8a2
+      '@dop251/types-goja_nodejs-global': 0.0.0-20260918183711-b481721df8a2
+      '@dop251/types-goja_nodejs-url': 0.0.0-20260918183711-b481721df8a2
+      zod: 4.6.5
 
   source-map-js@1.2.1: {}
 
@@ -1855,15 +1868,17 @@ snapshots:
 
   typescript@6.0.3: {}
 
+  undici-types@7.24.6: {}
+
   util-deprecate@1.0.2: {}
 
-  vite-node@3.2.4:
+  vite-node@3.2.4(@types/node@24.19.1):
     dependencies:
       cac: 6.7.14
       debug: 4.4.3
       es-module-lexer: 1.7.0
       pathe: 2.0.3
-      vite: 7.3.6
+      vite: 7.3.6(@types/node@24.19.1)
     transitivePeerDependencies:
       - '@types/node'
       - jiti
@@ -1878,7 +1893,7 @@ snapshots:
       - tsx
       - yaml
 
-  vite@7.3.6:
+  vite@7.3.6(@types/node@24.19.1):
     dependencies:
       esbuild: 0.28.1
       fdir: 6.5.0(picomatch@4.0.5)
@@ -1887,13 +1902,14 @@ snapshots:
       rollup: 4.62.3
       tinyglobby: 0.2.17
     optionalDependencies:
+      '@types/node': 24.19.1
       fsevents: 2.3.3
 
-  vitest@3.2.7:
+  vitest@3.2.7(@types/node@24.19.1):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.7
-      '@vitest/mocker': 3.2.7(vite@7.3.6)
+      '@vitest/mocker': 3.2.7(vite@7.3.6(@types/node@24.19.1))
       '@vitest/pretty-format': 3.2.7
       '@vitest/runner': 3.2.7
       '@vitest/snapshot': 3.2.7
@@ -1911,9 +1927,11 @@ snapshots:
       tinyglobby: 0.2.17
       tinypool: 1.1.1
       tinyrainbow: 2.0.0
-      vite: 7.3.6
-      vite-node: 3.2.4
+      vite: 7.3.6(@types/node@24.19.1)
+      vite-node: 3.2.4(@types/node@24.19.1)
       why-is-node-running: 2.3.0
+    optionalDependencies:
+      '@types/node': 24.19.1
     transitivePeerDependencies:
       - jiti
       - less
@@ -1955,4 +1973,4 @@ snapshots:
       compress-commons: 6.0.2
       readable-stream: 4.7.0
 
-  zod@4.4.3: {}
+  zod@4.6.5: {}

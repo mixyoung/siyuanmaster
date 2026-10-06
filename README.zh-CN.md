@@ -129,7 +129,11 @@
 | 审计 | 仅元数据；开启正文脱敏 |
 | 写入通道 | 仅通过思源内核 API——从不直接读写 `.sy` 文件 |
 
-Safe Write Transaction（`update_note`、`edit_block`）：写前快照（失败即停）→ 按需确认 → 状态复核 → 只执行一次 → 回读验证。结果语义明确区分：`state_changed` 表示未写入；`outcome_unknown` 表示写入调用出错或回读无法执行、写入**可能已生效**（先回读核实，绝不盲目重试）；`verification_failed` 表示已执行但回读验证不符。错误信息保留 `txnId` 与目标 ID 供人工核查。对可打标签的写入（`create_note`、`append_note`、`update_note`、`save_memory`），正文提交后标签失败将以成功返回并附 `tagStatus="failed"` 与 `tagError`——请用 `apply_tags` 单独补标签，不要重复正文写入。审计记录不含正文。
+Safe Write Transaction（`update_note`、`edit_block`）：写前快照（失败即停）→ 按需确认 → 状态复核 → 只执行一次 → 回读验证。结果语义明确区分：`state_changed` 表示未写入；`outcome_unknown` 表示写入调用出错或回读无法执行、写入**可能已生效**（先回读核实，绝不盲目重试）；`verification_failed` 表示已执行但回读验证不符。错误信息保留 `txnId` 与目标 ID 供人工核查。非事务写入（`create_note`、`append_note`、`save_memory`、`rename_note`、`move_note`）的写 API 失败也返回 `outcome_unknown`；已接受的重命名/移动若回读始终不符，返回 `verification_failed`。两者审计均记 `failed`，不记 `denied`。写前 `state_changed` 审计记 `failed` 并明确说明“未执行”；`denied` 仅用于访问/操作策略拒绝。标签失败但正文成功时，以成功返回并附 `tagStatus="failed"` 与 `tagError`——请用 `apply_tags` 单独补标签，不要重复正文写入；提示区分“事务回读验证”与“仅 API 返回成功”。审计记录不含正文。
+
+文档更新的执行后回读先做逐字节匹配；仅兼容思源导出在未以 LF/CR 结尾的输入后补**一个末尾 LF**（空正文额外只接受默认空段落的 U+200D + LF）。不做全局 `trim`，不忽略正文、CRLF 或显著空白差异；写前快照哈希及 `edit_block` 的严格规则不变。重命名/移动仅对**只读回查**轮询：立即读取、总预算 5 秒（包含读取耗时）、间隔最多 250ms、最多 21 次；读失败/超时为 `outcome_unknown`，持续可信但不匹配为 `verification_failed`，写 API 始终只执行一次。
+
+策略保存与后台同步共用串行的“加载/保存 → 内核重载 → 指纹确认”队列；每次保存绑定独立策略快照，内核状态字段也来自同一份深复制快照。只有确认成功时 Dock 才显示“策略已就绪”；确认失败明确显示“已保存，内核未确认”。审计追加只有在目录探测成功且确认文件不存在时才创建空日志；读取/探测失败、JSON 解析失败或记录必要字段异常时，保留原载荷、停止写回，并增加 `get_audit_log.writeFailures`；旧数据迁移归一化继续保持容错。
 
 **边界：** 插件策略仅保护本插件注册的工具。思源原生 `/mcp` 为管理员级认证入口；持有完整 API Token 的客户端仍可调用其他原生高权限工具。该边界已知，本插件不掩盖。
 
