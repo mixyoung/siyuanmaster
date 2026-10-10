@@ -412,4 +412,55 @@ describe("policy storage and recovery", () => {
     expect(f.api.storage.put).toHaveBeenCalledTimes(1);
     expect((f.current.get(MIGRATION_MARKER_KEY) as Record<string, unknown>).policyInitialized).toBeUndefined();
   });
+
+  it("catches up a policy change that arrives while a window is still bootstrapping", async () => {
+    const f = await fixture();
+    const w1 = f.frontend;
+    await w1.bootstrap();
+    const window2 = await f.openWindow();
+    const w2 = window2.plugin;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    w2.refreshNotebooks = vi.fn(() => gate);
+    const bootstrapping = w2.bootstrap();
+    for (let i = 0; i < 40 && window2.reloads() < 1; i++) await nextTurn();
+    expect(window2.reloads()).toBe(1);
+    expect(w2.policy).toEqual(A);
+
+    await w1.persistPolicy(B);
+    for (let i = 0; i < 10; i++) await nextTurn();
+    expect(w2.bootstrapped).toBe(false);
+    expect(window2.reloads()).toBe(1);
+
+    release();
+    await bootstrapping;
+    for (let i = 0; i < 10; i++) await nextTurn();
+    expect(w2.bootstrapped).toBe(true);
+    expect(window2.reloads()).toBe(2);
+    expect(w2.policy).toEqual(B);
+    expect(w2.dockElement.innerHTML).toContain("策略已就绪");
+  });
+
+  it("skips the post-bootstrap catch-up when the pending fingerprint already matches", async () => {
+    const f = await fixture();
+    const w1 = f.frontend;
+    await w1.bootstrap();
+    const window2 = await f.openWindow();
+    const w2 = window2.plugin;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    w2.refreshNotebooks = vi.fn(() => gate);
+    const bootstrapping = w2.bootstrap();
+    for (let i = 0; i < 40 && window2.reloads() < 1; i++) await nextTurn();
+
+    await w1.persistPolicy(A);
+    for (let i = 0; i < 10; i++) await nextTurn();
+
+    release();
+    await bootstrapping;
+    for (let i = 0; i < 10; i++) await nextTurn();
+    expect(window2.reloads()).toBe(1);
+    expect(w2.policy).toEqual(A);
+    expect(w2.dockElement.innerHTML).toContain("策略已就绪");
+  });
 });

@@ -89,9 +89,17 @@ export default class SiYuanMasterPlugin extends Plugin {
   private policySyncState: "syncing" | "confirmed" | "failed" = "syncing";
   private policySyncFailure = "策略同步失败";
   private policyNotificationBound = false;
+  /** Fingerprint seen in a notification that arrived before bootstrap finished. */
+  private pendingPolicyFingerprint?: string;
   private readonly handlePolicyNotification = async (...args: unknown[]): Promise<void> => {
     const fingerprint = args[0];
-    if (typeof fingerprint !== "string" || !this.bootstrapped) return;
+    if (typeof fingerprint !== "string") return;
+    if (!this.bootstrapped) {
+      // Bootstrap's own reload may or may not cover this change; re-check
+      // once initialization completes instead of dropping the signal.
+      this.pendingPolicyFingerprint = fingerprint;
+      return;
+    }
     if (fingerprint === await computePolicyFingerprint(this.policy)) return;
     await this.onDataChanged();
   };
@@ -122,8 +130,7 @@ export default class SiYuanMasterPlugin extends Plugin {
     try {
       const [ready] = await Promise.all([this.syncKernelPolicy(), this.refreshNotebooks()]);
       if (!ready) throw new Error(this.policySyncFailure);
-      this.bootstrapped = true;
-      this.renderDock();
+      await this.finishBootstrap();
     } catch (error) {
       console.error(`[${this.name}] bootstrap failed`, error);
       showMessage(
@@ -132,6 +139,19 @@ export default class SiYuanMasterPlugin extends Plugin {
         }`,
       );
       this.renderDock(error);
+    }
+  }
+
+  /** Bootstrap and manual-refresh recovery share the completion path. */
+  private async finishBootstrap(): Promise<void> {
+    this.bootstrapped = true;
+    this.renderDock();
+    const pending = this.pendingPolicyFingerprint;
+    if (pending !== undefined) {
+      this.pendingPolicyFingerprint = undefined;
+      if (pending !== await computePolicyFingerprint(this.policy)) {
+        await this.onDataChanged();
+      }
     }
   }
 
@@ -359,8 +379,7 @@ export default class SiYuanMasterPlugin extends Plugin {
     try {
       const [ready] = await Promise.all([this.syncKernelPolicy(), this.refreshNotebooks()]);
       if (!ready) throw new Error(this.policySyncFailure);
-      this.bootstrapped = true;
-      this.renderDock();
+      await this.finishBootstrap();
       showMessage(`${PRODUCT_DISPLAY_NAME}状态已刷新`, 2500, "info");
     } catch (error) {
       this.renderDock(error);
