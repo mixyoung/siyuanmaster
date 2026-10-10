@@ -1,4 +1,5 @@
 import { fetchPost } from "siyuan";
+import { FRONTEND_POLICY_TIMEOUT_MS } from "./policy-sync";
 import type { NotebookSummary } from "./types";
 
 interface KernelResponse<T> {
@@ -12,14 +13,25 @@ export function postKernel<T>(
   body: Record<string, unknown> = {},
 ): Promise<T> {
   return new Promise((resolve, reject) => {
-    fetchPost(path, body, (rawResponse) => {
-      const response = rawResponse as KernelResponse<T>;
-      if (response.code !== 0) {
-        reject(new Error(response.msg || `SiYuan API failed: ${path}`));
+    const timer = setTimeout(() => reject(new Error(`SiYuan API timed out: ${path}`)), FRONTEND_POLICY_TIMEOUT_MS);
+    const receive = (rawResponse: unknown) => {
+      clearTimeout(timer);
+      const response = rawResponse as KernelResponse<T> | null;
+      if (!response || response.code !== 0) {
+        reject(new Error(response?.msg || `SiYuan API failed: ${path}`));
         return;
       }
       resolve(response.data as T);
-    });
+    };
+    try {
+      fetchPost(path, body, receive, undefined, rawResponse => {
+        clearTimeout(timer);
+        reject(new Error(rawResponse?.msg || `SiYuan API failed: ${path}`));
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+    }
   });
 }
 

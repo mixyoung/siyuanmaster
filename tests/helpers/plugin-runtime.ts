@@ -52,7 +52,7 @@ export function nextTurn(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-export async function frontendRuntime<T>() {
+export async function frontendRuntime<T>(clock?: RuntimeClock, hostOverrides: Record<string, unknown> = {}) {
   const warnings = vi.fn();
   const errors = vi.fn();
   const messages = vi.fn();
@@ -63,6 +63,7 @@ export async function frontendRuntime<T>() {
     Dialog: class {},
     Setting: class {},
     showMessage: messages,
+    ...hostOverrides,
   };
   const module = { exports: {} as Record<string, unknown> };
   vm.runInNewContext(await bundle("index"), {
@@ -75,8 +76,9 @@ export async function frontendRuntime<T>() {
       return host;
     },
     console: { ...console, warn: warnings, error: errors },
-    setTimeout,
-    clearTimeout,
+    Date: clock ? class extends Date { static now() { return clock.now(); } } : Date,
+    setTimeout: clock?.setTimeout ?? setTimeout,
+    clearTimeout: clock?.clearTimeout ?? clearTimeout,
   });
   const PluginClass = module.exports.default as new () => T;
   return { plugin: new PluginClass(), warnings, errors, messages };

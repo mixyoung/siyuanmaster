@@ -1,31 +1,16 @@
 import type * as kernel from "siyuan/kernel";
 import {
   AUDIT_STORAGE_KEY,
+  CURRENT_STORAGE_DIR,
   MAX_AUDIT_ENTRIES,
+  isCurrentAuditEntry,
   normalizeAuditEntries,
 } from "./migration";
+import { PolicySyncBlockedError, PolicySyncTimeoutError, type PolicyTask } from "./policy-sync";
+import { confirmStorageFileMissing } from "./storage-state";
 import type { AuditEntry, PluginPolicy } from "./types";
 
 type AuditFileState = "present" | "missing" | "unknown";
-const AUDIT_OUTCOMES = new Set<AuditEntry["outcome"]>([
-  "allowed", "denied", "confirmation_required", "failed",
-]);
-
-function isCurrentAuditEntry(value: unknown): value is AuditEntry {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const entry = value as Record<string, unknown>;
-  return (
-    typeof entry.timestamp === "string" &&
-    Number.isFinite(Date.parse(entry.timestamp)) &&
-    typeof entry.operation === "string" &&
-    entry.operation.trim().length > 0 &&
-    typeof entry.outcome === "string" &&
-    AUDIT_OUTCOMES.has(entry.outcome as AuditEntry["outcome"])
-  );
-}
-
 /**
  * Metadata-only audit store.
  *
@@ -47,6 +32,7 @@ export class AuditStore {
   constructor(
     private readonly api: kernel.ISiyuan,
     private readonly getPolicy: () => PluginPolicy,
+    private readonly serialize: (action: (task?: PolicyTask) => Promise<void>) => Promise<void> = action => action(),
   ) {}
 
   /** Entries whose persistence failed since plugin start (in-memory). */
@@ -67,9 +53,16 @@ export class AuditStore {
     }
     // Serialize the whole read-modify-write; a rejected task must not break
     // the chain for subsequent records.
-    const task = this.writeQueue.then(() => this.appendEntry(entry));
+    let counted = false;
+    const failed = () => {
+      if (!counted) this.writeFailures += 1;
+      counted = true;
+    };
+    const task = this.writeQueue.then(() => this.serialize(context => this.appendEntry(entry, failed, context)));
     this.writeQueue = task.catch(() => undefined);
-    await task.catch(() => undefined);
+    await task.catch(error => {
+      if (error instanceof PolicySyncTimeoutError || error instanceof PolicySyncBlockedError) failed();
+    });
   }
 
   async list(limit: number): Promise<AuditEntry[]> {
@@ -79,40 +72,45 @@ export class AuditStore {
 
   private async appendEntry(
     entry: Omit<AuditEntry, "timestamp">,
+    failed: () => void,
+    task?: PolicyTask,
   ): Promise<void> {
+    const wait = task?.wait ?? (<T>(action: () => Promise<T>) => action());
     try {
       const now = Date.now();
       const cutoff =
         now - this.getPolicy().audit.retentionDays * 24 * 60 * 60 * 1000;
       // readExisting distinguishes "no log yet" from "storage read failed":
       // the latter throws and we skip the write-back entirely.
-      const entries = (await this.readExisting())
+      const entries = (await this.readExisting(task))
         .filter((item) => Date.parse(item.timestamp) >= cutoff)
         .slice(-(MAX_AUDIT_ENTRIES - 1));
       entries.push({
         ...entry,
         timestamp: new Date(now).toISOString(),
       });
-      await this.api.storage.put(
-        AUDIT_STORAGE_KEY,
-        JSON.stringify(entries),
-      );
+      await wait(() => this.api.storage.put(AUDIT_STORAGE_KEY, JSON.stringify(entries)));
     } catch (error) {
-      this.writeFailures += 1;
-      await this.api.logger.warn(
-        "SiYuanMaster audit persistence failed; entry not recorded (tool result unaffected)",
-        error instanceof Error ? error.message : String(error),
-      );
+      failed();
+      try {
+        await wait(() => this.api.logger.warn(
+          "SiYuanMaster audit persistence failed; entry not recorded (tool result unaffected)",
+          error instanceof Error ? error.message : String(error),
+        ));
+      } catch {
+        // Logging cannot change the persistence outcome or extend an expired task.
+      }
     }
   }
 
   /** Only a successful existence probe may establish an empty first-run log. */
-  private async readExisting(): Promise<AuditEntry[]> {
+  private async readExisting(task?: PolicyTask): Promise<AuditEntry[]> {
+    const wait = task?.wait ?? (<T>(action: () => Promise<T>) => action());
     let stored: Awaited<ReturnType<kernel.ISiyuan["storage"]["get"]>>;
     try {
-      stored = await this.api.storage.get(AUDIT_STORAGE_KEY);
+      stored = await wait(() => this.api.storage.get(AUDIT_STORAGE_KEY));
     } catch {
-      const state = await this.auditFileState();
+      const state = await this.auditFileState(task);
       if (state === "missing") {
         return [];
       }
@@ -124,7 +122,7 @@ export class AuditStore {
     }
     let parsed: unknown;
     try {
-      parsed = await stored.json();
+      parsed = await wait(() => stored.json());
     } catch {
       throw new Error(
         "stored audit log is unreadable (corrupt); refusing to overwrite",
@@ -140,18 +138,10 @@ export class AuditStore {
     return normalizeAuditEntries(parsed);
   }
 
-  private async auditFileState(): Promise<AuditFileState> {
+  private async auditFileState(task?: PolicyTask): Promise<AuditFileState> {
     try {
-      const entries = await this.api.storage.list(".");
-      if (
-        !Array.isArray(entries) ||
-        entries.some((entry) => !entry || typeof entry.name !== "string")
-      ) {
-        return "unknown";
-      }
-      return entries.some((entry) => entry.name === AUDIT_STORAGE_KEY)
-        ? "present"
-        : "missing";
+      return await confirmStorageFileMissing(this.api, CURRENT_STORAGE_DIR, AUDIT_STORAGE_KEY, task?.wait)
+        ? "missing" : "present";
     } catch {
       return "unknown";
     }
