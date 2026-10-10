@@ -7,15 +7,8 @@ import {
   isNotebookAllowed,
   normalizePolicy,
 } from "./config";
-import {
-  isAlreadyTaggedOnce,
-  LEGACY_TECHNICAL_ID,
-  legacyPetalFilePath,
-  parseWorkspaceJsonPayload,
-  runStorageMigration,
-  TAGGED_ONCE_ATTR,
-  type MigrationStorageIO,
-} from "./migration";
+import { isAlreadyTaggedOnce, TAGGED_ONCE_ATTR } from "./migration";
+import { PolicyStorage, type PolicySnapshot } from "./policy-storage";
 import {
   attachBlockStateHashes,
   blockDisplayText,
@@ -418,11 +411,13 @@ class SiYuanMasterKernelPlugin {
   private readonly audit = new AuditStore(
     this.api,
     () => this.policy,
+    action => this.policyStorage.serializeAuditWrite(action),
   );
   private readonly knowledgeRegistry = new KnowledgeRegistryStore(
     this.api.storage,
   );
   private policy: PluginPolicy = clonePolicy(DEFAULT_POLICY);
+  private readonly policyStorage = new PolicyStorage(this.api, policy => { this.policy = policy; });
   private readonly registeredCapabilities: string[] = [];
   private readonly structurePreviews = new Map<
     string,
@@ -442,11 +437,13 @@ class SiYuanMasterKernelPlugin {
     await this.reloadPolicy();
     await this.api.rpc.bind(
       "reloadPolicy",
-      async () => {
-        await this.reloadPolicy();
-        return this.status();
-      },
+      async () => this.reloadPolicy(),
       "Reload the SiYuanMaster policy from plugin-private storage.",
+    );
+    await this.api.rpc.bind(
+      "savePolicy",
+      async (policy: unknown) => this.savePolicy(policy),
+      "Save and verify the SiYuanMaster policy through the kernel writer.",
     );
     await this.api.rpc.bind(
       "getStatus",
@@ -502,55 +499,25 @@ class SiYuanMasterKernelPlugin {
       await this.api.agent.unregisterCapability(capability);
     }
     await this.api.rpc.unbind("reloadPolicy");
+    await this.api.rpc.unbind("savePolicy");
     await this.api.rpc.unbind("getStatus");
     this.structurePreviews.clear();
   }
 
-  private async reloadPolicy(): Promise<void> {
-    try {
-      const result = await runStorageMigration(this.createMigrationIO());
-      this.policy = result.policy;
-      if (result.policyCopied || result.auditCopied) {
-        await this.api.logger.info(
-          `SiYuanMaster migrated storage from ${LEGACY_TECHNICAL_ID} (policyCopied=${result.policyCopied}, auditCopied=${result.auditCopied})`,
-        );
-      }
-    } catch (error) {
-      this.policy = clonePolicy(DEFAULT_POLICY);
-      await this.api.logger.warn(
-        "Policy unavailable; using safe default allowlist with no selected notebooks",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
+  private async reloadPolicy(): Promise<Record<string, unknown>> {
+    return this.status(await this.policyStorage.reload());
   }
 
-  private createMigrationIO(): MigrationStorageIO {
-    return {
-      readCurrent: async (key) => {
-        try {
-          const stored = await this.api.storage.get(key);
-          return await stored.json();
-        } catch {
-          return undefined;
-        }
-      },
-      writeCurrent: async (key, value) => {
-        const content =
-          typeof value === "string" ? value : JSON.stringify(value);
-        await this.api.storage.put(key, content);
-      },
-      readLegacy: async (key) => {
-        const path = legacyPetalFilePath(key);
-        const raw = await this.client.readWorkspaceJson(path);
-        return parseWorkspaceJsonPayload(raw);
-      },
-    };
+  private async savePolicy(policy: unknown): Promise<Record<string, unknown>> {
+    return this.status(await this.policyStorage.save(policy));
   }
 
-  private async status(): Promise<Record<string, unknown>> {
-    const policy = clonePolicy(this.policy);
+  private async status(snapshot?: PolicySnapshot): Promise<Record<string, unknown>> {
+    const policy = clonePolicy(snapshot?.policy ?? this.policy);
+    const metadata = snapshot ?? this.policyStorage.metadata;
     return {
-      ready: true,
+      ...metadata,
+      policy,
       product: "siyuanmaster",
       technicalId: "siyuanmaster",
       toolCount: this.registeredCapabilities.length,

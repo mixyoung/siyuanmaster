@@ -7,14 +7,10 @@ import {
   isNotebookAllowed,
   normalizePolicy,
 } from "./config";
-import {
-  legacyPetalFilePath,
-  parseWorkspaceJsonPayload,
-  POLICY_STORAGE_KEY,
-  runStorageMigration,
-  type MigrationStorageIO,
-} from "./migration";
-import { listNotebooks, readWorkspaceJson } from "./siyuan-api";
+import { isPlausiblePolicy } from "./migration";
+import { FRONTEND_POLICY_TIMEOUT_MS, PolicySyncTimeoutError, PolicyTaskQueue, type PolicyTask } from "./policy-sync";
+import type { PolicySnapshot } from "./policy-storage";
+import { listNotebooks } from "./siyuan-api";
 import type {
   NotebookSummary,
   PluginPolicy,
@@ -75,13 +71,20 @@ class KernelPolicyReloadError extends Error {
   }
 }
 
+class PolicySaveError extends Error {
+  constructor(readonly uncertain: boolean, detail: string) {
+    super(`${uncertain ? "保存结果未知，请勿自动重试" : "策略保存失败"}：${detail}`);
+    this.name = "PolicySaveError";
+  }
+}
+
 export default class SiYuanMasterPlugin extends Plugin {
   private policy = clonePolicy(DEFAULT_POLICY);
   private notebooks: NotebookSummary[] = [];
   private dockElement?: HTMLElement;
   private dockEventsBound = false;
   private bootstrapped = false;
-  private policySyncQueue: Promise<void> = Promise.resolve();
+  private readonly policySyncQueue = new PolicyTaskQueue(FRONTEND_POLICY_TIMEOUT_MS);
   private policySyncState: "syncing" | "confirmed" | "failed" = "syncing";
   private policySyncFailure = "策略同步失败";
 
@@ -101,7 +104,8 @@ export default class SiYuanMasterPlugin extends Plugin {
 
   private async bootstrap(): Promise<void> {
     try {
-      await Promise.all([this.syncKernelPolicy(), this.refreshNotebooks()]);
+      const [ready] = await Promise.all([this.syncKernelPolicy(), this.refreshNotebooks()]);
+      if (!ready) throw new Error(this.policySyncFailure);
       this.bootstrapped = true;
       this.renderDock();
     } catch (error) {
@@ -337,7 +341,9 @@ export default class SiYuanMasterPlugin extends Plugin {
 
   private async refreshAll(): Promise<void> {
     try {
-      await Promise.all([this.syncKernelPolicy(), this.refreshNotebooks()]);
+      const [ready] = await Promise.all([this.syncKernelPolicy(), this.refreshNotebooks()]);
+      if (!ready) throw new Error(this.policySyncFailure);
+      this.bootstrapped = true;
       this.renderDock();
       showMessage(`${PRODUCT_DISPLAY_NAME}状态已刷新`, 2500, "info");
     } catch (error) {
@@ -348,107 +354,84 @@ export default class SiYuanMasterPlugin extends Plugin {
     }
   }
 
-  private async loadPolicy(): Promise<void> {
-    const result = await runStorageMigration(this.createMigrationIO());
-    this.policy = result.policy;
-  }
-
-  private createMigrationIO(): MigrationStorageIO {
-    return {
-      readCurrent: async (key) => {
-        try {
-          const value = await this.loadData(key);
-          if (value === null || value === undefined || value === "") {
-            return undefined;
-          }
-          return value;
-        } catch {
-          return undefined;
-        }
-      },
-      writeCurrent: async (key, value) => {
-        await this.saveData(key, value);
-      },
-      readLegacy: async (key) => {
-        const raw = await readWorkspaceJson(legacyPetalFilePath(key));
-        return parseWorkspaceJsonPayload(raw);
-      },
-    };
+  private async loadPolicy(task: PolicyTask): Promise<void> {
+    const status = await task.wait(() => this.kernel.rpc.call.reloadPolicy()) as PolicySnapshot;
+    if (!isPlausiblePolicy(status?.policy)) throw new Error("内核未返回有效策略");
+    const snapshot = clonePolicy(normalizePolicy(status.policy));
+    await task.wait(() => this.confirmKernelPolicyReloaded(snapshot, status));
+    this.policy = snapshot;
   }
 
   private async refreshNotebooks(): Promise<void> {
     this.notebooks = await listNotebooks();
   }
 
-  private enqueuePolicySync(task: () => Promise<void>): Promise<void> {
-    const pending = this.policySyncQueue.then(async () => {
-      this.policySyncState = "syncing";
-      this.renderDock();
-      try {
-        await task();
-        this.policySyncState = "confirmed";
-      } catch (error) {
-        this.policySyncState = "failed";
-        this.policySyncFailure = error instanceof KernelPolicyReloadError
-          ? "已保存，内核未确认"
-          : "策略同步失败";
-        throw error;
-      } finally {
+  private async enqueuePolicySync(action: (task: PolicyTask) => Promise<void>): Promise<void> {
+    try {
+      await this.policySyncQueue.run(async task => {
+        this.policySyncState = "syncing";
         this.renderDock();
-      }
-    });
-    // A failed confirmation must not prevent a later save or background retry.
-    this.policySyncQueue = pending.catch(() => undefined);
-    return pending;
+        try {
+          await action(task);
+          task.check();
+          this.policySyncState = "confirmed";
+        } finally {
+          this.renderDock();
+        }
+      });
+    } catch (error) {
+      // Classify every failure path, including timeouts that fire before the
+      // queued action starts, so the dock never stays on "synchronizing".
+      this.policySyncState = "failed";
+      this.policySyncFailure = error instanceof KernelPolicyReloadError
+        ? "已保存，内核未确认"
+        : error instanceof PolicySaveError
+          ? error.uncertain ? "保存结果未知" : "策略保存失败"
+          : error instanceof PolicySyncTimeoutError ? "策略同步超时" : "策略同步失败";
+      this.renderDock();
+      throw error;
+    }
   }
 
   private async persistPolicy(policy: PluginPolicy): Promise<void> {
     const snapshot = clonePolicy(normalizePolicy(policy));
-    await this.enqueuePolicySync(async () => {
-      await this.saveData(POLICY_STORAGE_KEY, snapshot);
+    await this.enqueuePolicySync(async task => {
+      let status: PolicySnapshot;
+      try {
+        status = await task.wait(() => this.kernel.rpc.call.savePolicy(snapshot)) as PolicySnapshot;
+      } catch (error) {
+        throw new PolicySaveError(true, error instanceof Error ? error.message : String(error));
+      }
+      if (status?.saveState !== "saved") {
+        throw new PolicySaveError(status?.saveState !== "not_saved", status?.policyError || "内核未确认存储结果");
+      }
       this.policy = snapshot;
-      await this.confirmKernelPolicyReloaded(snapshot);
+      await task.wait(() => this.confirmKernelPolicyReloaded(snapshot, status, true));
     });
   }
 
-  /** Confirm this operation's snapshot, never the mutable UI policy. */
-  private async confirmKernelPolicyReloaded(expected: PluginPolicy): Promise<void> {
+  /** A matching fingerprint does not establish a successful storage read. */
+  private async confirmKernelPolicyReloaded(
+    expected: PluginPolicy,
+    status: PolicySnapshot,
+    saved = false,
+  ): Promise<void> {
     const expectedFingerprint = await computePolicyFingerprint(expected);
-    let status: Record<string, unknown>;
-    try {
-      status = (await this.kernel.rpc.call.reloadPolicy()) as Record<
-        string,
-        unknown
-      >;
-    } catch (error) {
-      throw new KernelPolicyReloadError(
-        `内核策略重载 RPC 失败：${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-    if (
-      typeof status?.policyFingerprint !== "string" ||
-      status.policyFingerprint !== expectedFingerprint
-    ) {
-      throw new KernelPolicyReloadError(
-        `内核生效策略与已保存策略不一致（指纹比对失败；内核可能仍在使用旧策略或已退回默认策略）`,
-      );
+    if (status?.ready !== true ||
+      (status.policyLoadState !== "loaded" && status.policyLoadState !== "initial-default") ||
+      status.policyFingerprint !== expectedFingerprint) {
+      const message = status?.policyError || "内核策略加载状态或指纹未通过确认";
+      throw saved ? new KernelPolicyReloadError(message) : new Error(message);
     }
   }
 
-  /** Bootstrap, data changes and refresh share the save/confirmation queue. */
-  private async syncKernelPolicy(): Promise<void> {
+  private async syncKernelPolicy(): Promise<boolean> {
     try {
-      await this.enqueuePolicySync(async () => {
-        await this.loadPolicy();
-        await this.confirmKernelPolicyReloaded(clonePolicy(this.policy));
-      });
+      await this.enqueuePolicySync(task => this.loadPolicy(task));
+      return true;
     } catch (error) {
-      console.warn(
-        `[${this.name}] kernel policy reload not confirmed; kernel may keep serving the previous policy`,
-        error,
-      );
+      console.warn(`[${this.name}] kernel policy reload not confirmed`, error);
+      return false;
     }
   }
 
