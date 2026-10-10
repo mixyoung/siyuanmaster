@@ -15,6 +15,8 @@ import type { PluginPolicy } from "./types";
 
 export type PolicyLoadState = "loading" | "loaded" | "initial-default" | "unavailable";
 export type PolicySaveState = "not_saved" | "unknown" | "saved";
+/** Kernel→frontend push fired after a save is persisted and verified. */
+export const POLICY_CHANGED_METHOD = "policyChanged";
 export interface PolicySnapshot {
   ready: boolean;
   policy: PluginPolicy;
@@ -65,13 +67,17 @@ export class PolicyStorage {
       state.saveState = "unknown";
       await task.wait(() => this.api.storage.put(POLICY_STORAGE_KEY, JSON.stringify(snapshot)));
       const observed = await this.readCurrent(task, POLICY_STORAGE_KEY);
+      const fingerprint = await computePolicyFingerprint(snapshot);
       if (!isPlausiblePolicy(observed) ||
-        await computePolicyFingerprint(normalizePolicy(observed)) !== await computePolicyFingerprint(snapshot)) {
+        await computePolicyFingerprint(normalizePolicy(observed)) !== fingerprint) {
         throw new Error("Policy write readback did not match the requested policy");
       }
       task.check();
       state.saveState = "saved";
       this.commit(snapshot, "loaded");
+      // The host file-write API notifies every window; kernel storage.put
+      // does not. Push the verified change so other windows reload it.
+      void this.api.rpc.broadcast(POLICY_CHANGED_METHOD, [fingerprint]).catch(() => undefined);
     }, state);
   }
 

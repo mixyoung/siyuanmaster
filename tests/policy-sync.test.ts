@@ -9,10 +9,14 @@ interface FrontendRuntime {
   bootstrapped: boolean;
   notebooks: NotebookSummary[];
   dockElement: { innerHTML: string };
-  kernel: { rpc: { call: {
-    reloadPolicy: ReturnType<typeof vi.fn<() => Promise<PolicySnapshot>>>;
-    savePolicy: ReturnType<typeof vi.fn<(policy: PluginPolicy) => Promise<PolicySnapshot>>>;
-  } } };
+  kernel: { rpc: {
+    call: {
+      reloadPolicy: ReturnType<typeof vi.fn<() => Promise<PolicySnapshot>>>;
+      savePolicy: ReturnType<typeof vi.fn<(policy: PluginPolicy) => Promise<PolicySnapshot>>>;
+    };
+    bind: ReturnType<typeof vi.fn>;
+    unbind: ReturnType<typeof vi.fn>;
+  } };
   saveData: ReturnType<typeof vi.fn>;
   loadData: ReturnType<typeof vi.fn>;
   refreshNotebooks: ReturnType<typeof vi.fn<() => Promise<void>>>;
@@ -47,13 +51,17 @@ async function fixture(clock?: RuntimeClock) {
   plugin.saveData = vi.fn(async () => ({ code: 1 }));
   plugin.loadData = vi.fn(async () => clonePolicy(B));
   plugin.refreshNotebooks = vi.fn(async () => undefined);
-  plugin.kernel = { rpc: { call: {
-    reloadPolicy: vi.fn(async () => status(stored)),
-    savePolicy: vi.fn(async value => {
-      stored = clonePolicy(value);
-      return { ...await status(stored), saveState: "saved" };
-    }),
-  } } };
+  plugin.kernel = { rpc: {
+    call: {
+      reloadPolicy: vi.fn(async () => status(stored)),
+      savePolicy: vi.fn(async value => {
+        stored = clonePolicy(value);
+        return { ...await status(stored), saveState: "saved" };
+      }),
+    },
+    bind: vi.fn(),
+    unbind: vi.fn(),
+  } };
   return { ...host, getStored: () => stored, setStored: (value: PluginPolicy) => { stored = clonePolicy(value); } };
 }
 

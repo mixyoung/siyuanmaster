@@ -433,6 +433,36 @@ describe("technical-ID migration (phase 2 storage)", () => {
       .toEqual([valid]);
   });
 
+  it("loads a valid policy without sealing when the store is read-only", async () => {
+    const oldMarker = {
+      schemaVersion: 1, from: "siyuan-agent-access", to: "siyuanmaster",
+      completedAt: "2026-01-01T00:00:00.000Z", policySource: "new", policyCopied: true, auditCopied: false,
+    };
+    const policy = { access: { mode: "allowlist", selectedNotebookIds: ["20260101000000-nb1"], defaultDecision: "deny" } };
+    const store = memoryIO({ current: { [MIGRATION_MARKER_KEY]: oldMarker, [POLICY_STORAGE_KEY]: policy } });
+    store.io.writeCurrent = async () => { throw new Error("read-only"); };
+    const result = await runStorageMigration(store.io);
+    expect(result.alreadyMigrated).toBe(true);
+    expect(result.policySource).toBe("new");
+    expect(result.policy.access.selectedNotebookIds).toEqual(["20260101000000-nb1"]);
+    expect(result.writtenKeys).toEqual([]);
+    expect(store.current[MIGRATION_MARKER_KEY]).toEqual(oldMarker);
+    expect(store.current[POLICY_STORAGE_KEY]).toEqual(policy);
+  });
+
+  it("seals an unsealed marker when writes succeed and keeps the policy untouched", async () => {
+    const oldMarker = {
+      schemaVersion: 1, from: "siyuan-agent-access", to: "siyuanmaster",
+      completedAt: "2026-01-01T00:00:00.000Z", policySource: "new", policyCopied: true, auditCopied: false,
+    };
+    const policy = { access: { mode: "allowlist", selectedNotebookIds: ["20260101000000-nb1"], defaultDecision: "deny" } };
+    const store = memoryIO({ current: { [MIGRATION_MARKER_KEY]: oldMarker, [POLICY_STORAGE_KEY]: policy } });
+    const result = await runStorageMigration(store.io);
+    expect(result.writtenKeys).toEqual([MIGRATION_MARKER_KEY]);
+    expect(store.current[MIGRATION_MARKER_KEY]).toMatchObject({ policyInitialized: true, policySource: "new" });
+    expect(store.current[POLICY_STORAGE_KEY]).toEqual(policy);
+  });
+
   it("reads legacy once-tag attr and writes only the new attr name", () => {
     expect(
       isAlreadyTaggedOnce({ [LEGACY_TAGGED_ONCE_ATTR]: "true" }),

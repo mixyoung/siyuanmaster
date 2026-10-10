@@ -365,8 +365,15 @@ export async function runStorageMigration(
       writtenKeys.push(POLICY_STORAGE_KEY);
     }
     if (!existingMarkerRaw.policyInitialized) {
-      await io.writeCurrent(MIGRATION_MARKER_KEY, { ...existingMarkerRaw, policyInitialized: true });
-      writtenKeys.push(MIGRATION_MARKER_KEY);
+      // Sealing the marker is migration bookkeeping. A store that forbids
+      // writes must still serve an already-valid policy; the seal retries
+      // on the next load that can write.
+      try {
+        await io.writeCurrent(MIGRATION_MARKER_KEY, { ...existingMarkerRaw, policyInitialized: true });
+        writtenKeys.push(MIGRATION_MARKER_KEY);
+      } catch {
+        // Marker stays unsealed; the healthy policy load continues.
+      }
     }
     return {
       policy: decision.policy,

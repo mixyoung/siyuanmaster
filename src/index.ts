@@ -10,6 +10,7 @@ import {
 import { isPlausiblePolicy } from "./migration";
 import { FRONTEND_POLICY_TIMEOUT_MS, PolicySyncTimeoutError, PolicyTaskQueue, type PolicyTask } from "./policy-sync";
 import type { PolicySnapshot } from "./policy-storage";
+import { POLICY_CHANGED_METHOD } from "./policy-storage";
 import { listNotebooks } from "./siyuan-api";
 import type {
   NotebookSummary,
@@ -87,11 +88,25 @@ export default class SiYuanMasterPlugin extends Plugin {
   private readonly policySyncQueue = new PolicyTaskQueue(FRONTEND_POLICY_TIMEOUT_MS);
   private policySyncState: "syncing" | "confirmed" | "failed" = "syncing";
   private policySyncFailure = "策略同步失败";
+  private policyNotificationBound = false;
+  private readonly handlePolicyNotification = async (...args: unknown[]): Promise<void> => {
+    const fingerprint = args[0];
+    if (typeof fingerprint !== "string" || !this.bootstrapped) return;
+    if (fingerprint === await computePolicyFingerprint(this.policy)) return;
+    await this.onDataChanged();
+  };
 
   onload(): void {
     this.registerDock();
     this.registerSettings();
     void this.bootstrap();
+  }
+
+  onunload(): void {
+    if (this.policyNotificationBound) {
+      this.policyNotificationBound = false;
+      this.kernel.rpc.unbind(POLICY_CHANGED_METHOD, this.handlePolicyNotification);
+    }
   }
 
   async onDataChanged(): Promise<void> {
@@ -103,6 +118,7 @@ export default class SiYuanMasterPlugin extends Plugin {
   }
 
   private async bootstrap(): Promise<void> {
+    this.bindPolicyNotification();
     try {
       const [ready] = await Promise.all([this.syncKernelPolicy(), this.refreshNotebooks()]);
       if (!ready) throw new Error(this.policySyncFailure);
@@ -352,6 +368,13 @@ export default class SiYuanMasterPlugin extends Plugin {
         `刷新失败：${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  /** Kernel-side saves push POLICY_CHANGED_METHOD; reload only on drift. */
+  private bindPolicyNotification(): void {
+    if (this.policyNotificationBound) return;
+    this.policyNotificationBound = true;
+    this.kernel.rpc.bind(POLICY_CHANGED_METHOD, this.handlePolicyNotification);
   }
 
   private async loadPolicy(task: PolicyTask): Promise<void> {

@@ -29,7 +29,11 @@ interface FrontendRuntime {
   bootstrapped: boolean;
   notebooks: unknown[];
   dockElement: { innerHTML: string };
-  kernel: { rpc: { call: { reloadPolicy(): Promise<Reply>; savePolicy(policy: PluginPolicy): Promise<Reply> } } };
+  kernel: { rpc: {
+    call: { reloadPolicy(): Promise<Reply>; savePolicy(policy: PluginPolicy): Promise<Reply> };
+    bind(method: string, handler: (...args: unknown[]) => unknown): void;
+    unbind(method: string, handler: (...args: unknown[]) => unknown): void;
+  } };
   saveData: ReturnType<typeof vi.fn>;
   loadData: ReturnType<typeof vi.fn>;
   refreshNotebooks: ReturnType<typeof vi.fn>;
@@ -54,6 +58,12 @@ async function fixture(options: { marker?: boolean; empty?: boolean } = {}) {
     rpc: {
       bind: vi.fn(async (name: string, handler: (...args: unknown[]) => Promise<unknown>) => { handlers.set(name, handler); }),
       unbind: vi.fn(async (name: string) => { handlers.delete(name); }),
+      broadcast: vi.fn(async (method: string, params?: unknown[] | Record<string, unknown>) => {
+        const args = Array.isArray(params) ? params : [params];
+        for (const handler of [...windows.values()].flatMap(w => [...w.handlers.get(method) ?? []])) {
+          void handler(...args);
+        }
+      }),
     },
     client: { fetch: vi.fn(async (path: string, init: { body: string }) => {
       const target = (JSON.parse(init.body) as { path: string }).path;
@@ -76,18 +86,36 @@ async function fixture(options: { marker?: boolean; empty?: boolean } = {}) {
     logger: { warn: vi.fn(async () => undefined), info: vi.fn(async () => undefined) },
   };
   const backend = await kernelRuntime<KernelRuntime>(api as unknown as kernel.ISiyuan, clock);
-  const host = await frontendRuntime<FrontendRuntime>();
-  const frontend = host.plugin;
-  frontend.notebooks = [];
-  frontend.dockElement = { innerHTML: "" };
-  frontend.refreshNotebooks = vi.fn(async () => undefined);
-  frontend.loadData = vi.fn(async () => { throw new Error("Frontend cache must not load policy"); });
-  frontend.saveData = vi.fn(async () => ({ code: 1, msg: "Frontend storage must not be used" }));
-  frontend.kernel = { rpc: { call: {
-    reloadPolicy: () => backend.reloadPolicy(),
-    savePolicy: value => backend.savePolicy(value),
-  } } };
-  return { current, legacy, failures, api, backend, frontend, handlers, ...host };
+  const windows: Array<{ handlers: Map<string, Set<(...args: unknown[]) => unknown>>; reloads: () => number }> = [];
+  async function openWindow() {
+    const host = await frontendRuntime<FrontendRuntime>();
+    const plugin = host.plugin;
+    const handlers = new Map<string, Set<(...args: unknown[]) => unknown>>();
+    let reloads = 0;
+    plugin.notebooks = [];
+    plugin.dockElement = { innerHTML: "" };
+    plugin.refreshNotebooks = vi.fn(async () => undefined);
+    plugin.loadData = vi.fn(async () => { throw new Error("Frontend cache must not load policy"); });
+    plugin.saveData = vi.fn(async () => ({ code: 1, msg: "Frontend storage must not be used" }));
+    plugin.kernel = { rpc: {
+      call: {
+        reloadPolicy: () => { reloads += 1; return backend.reloadPolicy(); },
+        savePolicy: value => backend.savePolicy(value),
+      },
+      bind: (method, handler) => {
+        const set = handlers.get(method) ?? new Set();
+        set.add(handler);
+        handlers.set(method, set);
+      },
+      unbind: (method, handler) => { handlers.get(method)?.delete(handler); },
+    } };
+    const entry = { handlers, reloads: () => reloads };
+    windows.push(entry);
+    return { ...host, plugin, reloads: () => reloads };
+  }
+  const firstWindow = await openWindow();
+  const frontend = firstWindow.plugin;
+  return { current, legacy, failures, api, backend, frontend, handlers, openWindow, ...firstWindow };
 }
 
 describe("policy storage and recovery", () => {
@@ -121,6 +149,7 @@ describe("policy storage and recovery", () => {
     const f = await fixture();
     await f.frontend.bootstrap();
     await f.frontend.persistPolicy(B);
+    for (let i = 0; i < 10; i++) await nextTurn();
     expect(f.frontend.saveData).not.toHaveBeenCalled();
     expect(f.current.get(POLICY_STORAGE_KEY)).toEqual(B);
     expect(f.frontend.policy).toEqual(B);
@@ -341,5 +370,46 @@ describe("policy storage and recovery", () => {
     await f.frontend.onDataChanged();
     expect(f.frontend.policy).toEqual(B);
     expect(f.frontend.dockElement.innerHTML).toContain("策略已就绪");
+  });
+
+  it("pushes verified saves to other windows and skips windows already in sync", async () => {
+    const f = await fixture();
+    const w1 = f.frontend;
+    await w1.bootstrap();
+    const window2 = await f.openWindow();
+    const w2 = window2.plugin;
+    await w2.bootstrap();
+    expect(w2.policy).toEqual(A);
+    const baseline = window2.reloads();
+    await w1.persistPolicy(B);
+    for (let i = 0; i < 10; i++) await nextTurn();
+    expect(f.api.rpc.broadcast).toHaveBeenCalledWith("policyChanged", [await computePolicyFingerprint(B)]);
+    expect(window2.reloads()).toBe(baseline + 1);
+    expect(w2.policy).toEqual(B);
+    expect(w2.dockElement.innerHTML).toContain("策略已就绪");
+
+    await w1.persistPolicy(B);
+    for (let i = 0; i < 10; i++) await nextTurn();
+    expect(window2.reloads()).toBe(baseline + 1);
+  });
+
+  it("does not notify windows when persistence fails", async () => {
+    const f = await fixture();
+    await f.frontend.bootstrap();
+    f.api.storage.put.mockImplementation(async () => undefined);
+    await expect(f.frontend.persistPolicy(B)).rejects.toThrow("保存结果未知");
+    expect(f.api.rpc.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("serves a valid policy from a read-only store while upgrading an old marker", async () => {
+    const f = await fixture();
+    delete (f.current.get(MIGRATION_MARKER_KEY) as Record<string, unknown>).policyInitialized;
+    f.api.storage.put.mockRejectedValue(new Error("read-only storage"));
+    const reply = await f.backend.reloadPolicy();
+    expect(reply.ready).toBe(true);
+    expect(reply.policyLoadState).toBe("loaded");
+    expect(reply.policy).toEqual(A);
+    expect(f.api.storage.put).toHaveBeenCalledTimes(1);
+    expect((f.current.get(MIGRATION_MARKER_KEY) as Record<string, unknown>).policyInitialized).toBeUndefined();
   });
 });
