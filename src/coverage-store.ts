@@ -108,6 +108,7 @@ export class CoverageStore {
         status: "pending",
         path: member.path,
         updated: member.updated,
+        contentMark: member.contentMark,
         coverage: [],
       };
     }
@@ -165,6 +166,16 @@ export class CoverageStore {
     } else if (document.contentHash === undefined) {
       document.contentHash = input.contentHash;
       document.contentLength = input.contentLength;
+      // First page of a fresh version self-heals a stale attention state;
+      // without this a demoted document could never become complete again.
+      // `blocked` is policy state and is cleared only by an explicit retry.
+      if (
+        document.status === "changed" ||
+        document.status === "failed" ||
+        document.status === "truncated"
+      ) {
+        document.status = "pending";
+      }
     }
     document.coverage = mergeCoverage(document.coverage, input.start, input.end);
     void this.persistBestEffort(session.sessionId);
@@ -234,7 +245,15 @@ export class CoverageStore {
     for (const [id, document] of Object.entries(session.documents)) {
       const member = fresh.get(id);
       if (!member) continue;
-      if (member.updated === document.updated) continue;
+      // SiYuan bumps the document block's `updated` only on structural
+      // changes; in-place content edits leave it untouched, so the child-block
+      // contentMark carries the content half of the comparison.
+      if (
+        member.updated === document.updated &&
+        (member.contentMark ?? "") === (document.contentMark ?? "")
+      ) {
+        continue;
+      }
       // A document changed since it was covered or marked: old coverage no
       // longer describes the current export. Demote and reset.
       if (documentComplete(document) || document.status !== "pending") {
@@ -242,6 +261,7 @@ export class CoverageStore {
         document.lastError = "document changed since it was last covered";
       }
       document.updated = member.updated;
+      document.contentMark = member.contentMark;
       document.coverage = [];
       document.contentHash = undefined;
       document.contentLength = undefined;

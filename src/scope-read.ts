@@ -16,6 +16,14 @@ export interface ScopeMember {
   id: string;
   path: string;
   updated: string;
+  /**
+   * Content-change signal: child-block count plus the newest child-block
+   * updated timestamp. SiYuan bumps the document block's own `updated` only
+   * for structural changes; in-place content edits touch child blocks alone,
+   * so coverage re-verification needs this marker to notice them. Not part of
+   * the (structural) scope fingerprint.
+   */
+  contentMark: string;
 }
 
 export type ScopeDocumentStatus =
@@ -29,6 +37,8 @@ export interface ScopeDocumentState {
   status: ScopeDocumentStatus;
   path: string;
   updated: string;
+  /** Enumeration-time content-change marker (see ScopeMember.contentMark). */
+  contentMark?: string;
   /** SHA-256 of the full export every returned page of this document agreed on. */
   contentHash?: string;
   /** Full-export length in UTF-16 code units. */

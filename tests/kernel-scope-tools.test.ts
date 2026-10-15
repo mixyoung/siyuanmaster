@@ -153,11 +153,30 @@ function answerSql(
       .slice(0, Number(stmt.match(/LIMIT (\d+)/)![1]))
       .map((row) => ({ ...row, title: row.content, has_children: 0 }));
   }
+  if (stmt.includes("GROUP BY root_id")) {
+    // per-document child aggregate backing ScopeMember.contentMark
+    const ids = [...stmt.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    return ids.map((id) => {
+      const children = [...blocks.values()].filter((row) => row.root_id === id);
+      const maxUpdated = children.reduce((acc, row) => (String(row.updated) > acc ? String(row.updated) : acc), "");
+      return { root_id: id, n: children.length, max_updated: maxUpdated || null };
+    });
+  }
   if (stmt.includes("d.updated AS updated")) {
-    // scope members (listDocumentTree fingerprint / listScopeMembers)
-    return [...blocks.values()].map((row) => ({
-      id: row.id, path: row.path, updated: row.updated,
-    }));
+    // scope members; mirror the SQL API's silent 64-row cap on bare queries
+    // so pagination regressions cannot hide behind an all-rows stub
+    const keyset = stmt.includes("d.path > '")
+      ? String(stmt.match(/d\.path > '([^']+)'/)![1])
+      : null;
+    const limit = stmt.includes("LIMIT ")
+      ? Number(stmt.match(/LIMIT (\d+)/)![1])
+      : 64;
+    return [...blocks.values()]
+      .filter((row) => row.type === "d" && row.id === row.root_id)
+      .filter((row) => keyset === null || String(row.path) > keyset)
+      .sort((a, b) => (String(a.path) < String(b.path) ? -1 : String(a.path) > String(b.path) ? 1 : 0))
+      .slice(0, limit)
+      .map((row) => ({ id: row.id, path: row.path, updated: row.updated }));
   }
   if (stmt.trimStart().startsWith("SELECT b.root_id AS document_id")) {
     return search.docPage.map((id) => ({ document_id: id }));
@@ -275,6 +294,42 @@ describe("scope read coverage", () => {
     expect((status.result!.counts as Record<string, number>).complete).toBe(0);
   });
 
+  it("demotes only the content-edited document even when its own updated is unchanged", async () => {
+    const f = await fixture();
+    // A paragraph inside CHILD gives the content signal something to track.
+    f.blocks.set("20260101000000-paraaaa", {
+      id: "20260101000000-paraaaa", root_id: CHILD, box: NB, path: CHILD_PATH, hpath: "/根/子", name: "", alias: "", memo: "", tag: "",
+      content: "子文档段落", type: "p", subtype: "", created: "20261001000000", updated: "20261001000002",
+    });
+    const scope = await openScope(f);
+    const sessionId = scope.sessionId as string;
+    expect(await readFully(f, sessionId, ROOT)).toMatchObject({ ok: true });
+    expect(await readFully(f, sessionId, CHILD)).toMatchObject({ ok: true });
+    let status = (await f.tool("scope_read_status")({ sessionId })) as ToolReply;
+    expect(status.result!.complete).toBe(true);
+
+    // In-place content edit: SiYuan leaves the document block's updated
+    // untouched and only bumps the child paragraph's updated.
+    f.blocks.set("20260101000000-paraaaa", { ...f.blocks.get("20260101000000-paraaaa")!, updated: "20261001000009" });
+
+    status = (await f.tool("scope_read_status")({ sessionId })) as ToolReply;
+    expect(status.result!.complete).toBe(false);
+    const counts = status.result!.counts as Record<string, number>;
+    expect(counts.changed).toBe(1);
+    expect(counts.complete).toBe(1);
+
+    // Structural fingerprint is unchanged, so the session resumes — carrying
+    // only the edited document as needing a re-read.
+    const resumed = (await f.tool("open_scope_read")({ notebookId: NB })) as ToolReply;
+    expect(resumed.ok).toBe(true);
+    expect(resumed.result!.resumed).toBe(true);
+    expect(resumed.result!.sessionId).toBe(sessionId);
+
+    expect(await readFully(f, sessionId, CHILD)).toMatchObject({ ok: true });
+    status = (await f.tool("scope_read_status")({ sessionId })) as ToolReply;
+    expect(status.result!.complete).toBe(true);
+  });
+
   it("marks blocked and keeps complete=false when permission is withdrawn mid-task", async () => {
     const f = await fixture();
     const scope = await openScope(f);
@@ -296,10 +351,25 @@ describe("scope read coverage", () => {
     }
   });
 
+  it("enumerates every member beyond the SQL API's 64-row bare-query cap", async () => {
+    const f = await fixture();
+    for (let i = 0; i < 100; i += 1) {
+      const id = `20260101000000-${String(2000000 + i)}`;
+      f.blocks.set(id, {
+        id, root_id: id, box: NB, path: `/${ROOT}/${id}.sy`, hpath: `/根/${id}`, name: "", alias: "", memo: "", tag: "",
+        content: id, type: "d", subtype: "", created: "20261001000000", updated: `20261001${String(100000 + i)}`,
+      });
+    }
+    const reply = (await f.tool("open_scope_read")({ notebookId: NB, rootDocumentId: ROOT })) as ToolReply;
+    expect(reply.ok).toBe(true);
+    // root + pre-existing CHILD + 100 seeded children, all past the 64-row cap
+    expect(reply.result!.documentCount).toBe(102);
+  });
+
   it("rejects oversized scopes with shard suggestions instead of trimming", async () => {
     const f = await fixture();
     for (let i = 0; i < 2100; i += 1) {
-      const id = `20260101000000-d${String(i).padStart(4, "0")}`.slice(0, 21);
+      const id = `20260101000000-${String(1000000 + i)}`;
       f.blocks.set(id, {
         id, root_id: id, box: NB, path: `/${id}.sy`, hpath: `/${id}`, name: "", alias: "", memo: "", tag: "",
         content: id, type: "d", subtype: "", created: "20261001000000", updated: "20261001000000",

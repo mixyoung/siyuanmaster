@@ -11,8 +11,8 @@ import { computeContentHash } from "../src/write-transaction";
 const NB = "20260101000000-notebok";
 const DOC = "20260101000000-aaaaaaa";
 
-function member(id: string, path: string, updated = "20261001000000"): ScopeMember {
-  return { id, path, updated };
+function member(id: string, path: string, updated = "20261001000000", contentMark = "1:20261001000000"): ScopeMember {
+  return { id, path, updated, contentMark };
 }
 
 function makeApi(options: {

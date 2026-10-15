@@ -4,6 +4,7 @@ import {
   type DocumentTreeRow,
 } from "./document-tree";
 import type { NotebookSummary } from "./types";
+import type { ScopeMember } from "./scope-read";
 
 interface KernelApiEnvelope<T> {
   code: number;
@@ -196,8 +197,11 @@ export class KernelApiClient {
       ...new Set(ids.map((id) => assertSiyuanId(id, "documentId"))),
     ];
     const results: BlockRecord[] = [];
-    for (let offset = 0; offset < uniqueIds.length; offset += 200) {
-      const chunk = uniqueIds.slice(offset, offset + 200);
+    // Chunk at the SQL API's bare-query row cap (64): an IN-list query without
+    // LIMIT is silently truncated to 64 rows, so larger chunks would drop
+    // documents.
+    for (let offset = 0; offset < uniqueIds.length; offset += 64) {
+      const chunk = uniqueIds.slice(offset, offset + 64);
       if (chunk.length === 0) {
         continue;
       }
@@ -550,7 +554,7 @@ export class KernelApiClient {
     parentDocument?: BlockRecord;
     /** Optional relative depth bound; omit for the complete subtree. */
     maxDepth?: number;
-  }): Promise<Array<{ id: string; path: string; updated: string }>> {
+  }): Promise<ScopeMember[]> {
     const notebookId = assertSiyuanId(input.notebookId, "notebookId");
     const parent = input.parentDocument;
     const commonWhere = this.documentScopeWhere(notebookId, parent);
@@ -560,13 +564,60 @@ export class KernelApiClient {
         : `AND (LENGTH(d.path) - LENGTH(REPLACE(d.path, '/', ''))) <= ${
             (parent ? documentTreePathDepth(parent.path) : 0) + input.maxDepth
           }`;
-    return this.sql<{ id: string; path: string; updated: string }>(
-      `SELECT d.id AS id, d.path AS path, d.updated AS updated
-       FROM blocks d
-       WHERE ${commonWhere}
-         ${depthClause}
-       ORDER BY d.path ASC`,
-    );
+    // The SQL API silently truncates bare queries at 64 rows, so the member
+    // manifest must be fetched in explicit-LIMIT keyset pages on d.path; a
+    // single unbounded query would under-count scopes, defang the session
+    // capacity cap, and fingerprint a partial member list.
+    const PAGE_SIZE = 500;
+    const members: Array<{ id: string; path: string; updated: string; contentMark: string }> = [];
+    let afterPath = "";
+    for (;;) {
+      const keyset = afterPath
+        ? `AND d.path > '${escapeSqlLiteral(afterPath)}'`
+        : "";
+      const page = await this.sql<{ id: string; path: string; updated: string }>(
+        `SELECT d.id AS id, d.path AS path, d.updated AS updated
+         FROM blocks d
+         WHERE ${commonWhere}
+           ${depthClause}
+           ${keyset}
+         ORDER BY d.path ASC
+         LIMIT ${PAGE_SIZE}`,
+      );
+      // SiYuan bumps a document block's `updated` only on structural changes;
+      // in-place content edits touch child blocks alone. The per-document
+      // child aggregate (count + newest child updated) is the content signal
+      // coverage re-verification compares. Chunked at 64 ids because bare
+      // queries are capped at 64 rows.
+      const stats = new Map<string, string>();
+      for (let offset = 0; offset < page.length; offset += 64) {
+        const idList = page
+          .slice(offset, offset + 64)
+          .map((row) => `'${escapeSqlLiteral(assertSiyuanId(row.id, "documentId"))}'`)
+          .join(", ");
+        const rows = await this.sql<{ root_id: string; n: number | string; max_updated: string | null }>(
+          `SELECT root_id AS root_id, COUNT(*) AS n, MAX(updated) AS max_updated
+           FROM blocks
+           WHERE root_id IN (${idList})
+           GROUP BY root_id`,
+        );
+        for (const row of rows) {
+          stats.set(row.root_id, `${Number(row.n)}:${row.max_updated ?? "-"}`);
+        }
+      }
+      for (const row of page) {
+        members.push({
+          id: row.id,
+          path: row.path,
+          updated: row.updated,
+          contentMark: stats.get(row.id) ?? "0:-",
+        });
+      }
+      if (page.length < PAGE_SIZE) {
+        return members;
+      }
+      afterPath = page[page.length - 1].path;
+    }
   }
 
   async getBlockAttrs(
