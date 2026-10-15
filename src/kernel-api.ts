@@ -460,6 +460,8 @@ export class KernelApiClient {
     parentDocument?: BlockRecord;
     maxDepth: number;
     maxNodes: number;
+    /** Keyset cursor: only documents with a physical path after this value. */
+    afterPath?: string;
   }): Promise<DocumentTreeQueryResult> {
     const notebookId = assertSiyuanId(input.notebookId, "notebookId");
     const parent = input.parentDocument;
@@ -467,18 +469,10 @@ export class KernelApiClient {
     const depthLimit = baseDepth + input.maxDepth;
     const depthExpression =
       "(LENGTH(d.path) - LENGTH(REPLACE(d.path, '/', '')))";
-    const scope = parent
-      ? `AND (
-           d.id = '${escapeSqlLiteral(parent.id)}'
-           OR d.path LIKE '${escapeSqlLiteral(
-             parent.path.replace(/\.sy$/i, ""),
-           )}/%'
-         )`
+    const commonWhere = this.documentScopeWhere(notebookId, parent);
+    const afterPath = input.afterPath
+      ? `AND d.path > '${escapeSqlLiteral(input.afterPath)}'`
       : "";
-    const commonWhere = `d.type = 'd'
-       AND d.id = d.root_id
-       AND d.box = '${escapeSqlLiteral(notebookId)}'
-       ${scope}`;
 
     const counts = await this.sql<DocumentTreeCountRow>(
       `SELECT
@@ -511,6 +505,7 @@ export class KernelApiClient {
        FROM blocks d
        WHERE ${commonWhere}
          AND ${depthExpression} <= ${depthLimit}
+         ${afterPath}
        ORDER BY d.path ASC
        LIMIT ${input.maxNodes}`,
     );
@@ -521,6 +516,57 @@ export class KernelApiClient {
       totalCount: Number.isFinite(totalCount) ? totalCount : 0,
       eligibleCount: Number.isFinite(eligibleCount) ? eligibleCount : 0,
     };
+  }
+
+  /** Shared exact scope predicate: one notebook, optionally rooted at one
+   * physical document subtree. Paths are ID-based; titles never enter this
+   * predicate. */
+  private documentScopeWhere(
+    notebookId: string,
+    parent?: BlockRecord,
+  ): string {
+    const scope = parent
+      ? `AND (
+           d.id = '${escapeSqlLiteral(parent.id)}'
+           OR d.path LIKE '${escapeSqlLiteral(
+             parent.path.replace(/\.sy$/i, ""),
+           )}/%'
+         )`
+      : "";
+    return `d.type = 'd'
+       AND d.id = d.root_id
+       AND d.box = '${escapeSqlLiteral(notebookId)}'
+       ${scope}`;
+  }
+
+  /**
+   * Full member list of a scope, ordered by physical path: the enumeration
+   * universe for scope reads and the input to the scope change fingerprint.
+   * No node limit — callers enforce their own capacity bounds, and a scope
+   * must never be silently trimmed.
+   */
+  async listScopeMembers(input: {
+    notebookId: string;
+    parentDocument?: BlockRecord;
+    /** Optional relative depth bound; omit for the complete subtree. */
+    maxDepth?: number;
+  }): Promise<Array<{ id: string; path: string; updated: string }>> {
+    const notebookId = assertSiyuanId(input.notebookId, "notebookId");
+    const parent = input.parentDocument;
+    const commonWhere = this.documentScopeWhere(notebookId, parent);
+    const depthClause =
+      input.maxDepth === undefined
+        ? ""
+        : `AND (LENGTH(d.path) - LENGTH(REPLACE(d.path, '/', ''))) <= ${
+            (parent ? documentTreePathDepth(parent.path) : 0) + input.maxDepth
+          }`;
+    return this.sql<{ id: string; path: string; updated: string }>(
+      `SELECT d.id AS id, d.path AS path, d.updated AS updated
+       FROM blocks d
+       WHERE ${commonWhere}
+         ${depthClause}
+       ORDER BY d.path ASC`,
+    );
   }
 
   async getBlockAttrs(

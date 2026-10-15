@@ -115,7 +115,7 @@
 
 ### 2.3 工具集合
 
-28 个裸工具名 = 原 16 + `resolve_document` + `read_note_segments` + `edit_block` + `register_knowledge_source` + `register_wiki_authority` + `knowledge_status` + `find_wiki_candidates` + `list_wiki_templates` + `render_wiki_template` + `validate_wiki_template` + `validate_pdf_conversion` + `plan_source_ingest`。全部只生成当前 `plugin__siyuanmaster__` 前缀下的 Agent capability 模型名，并由思源 3.8.1 追加稳定哈希。
+30 个裸工具名 = 原 16 + `resolve_document` + `read_note_segments` + `open_scope_read` + `scope_read_status` + `edit_block` + `register_knowledge_source` + `register_wiki_authority` + `knowledge_status` + `find_wiki_candidates` + `list_wiki_templates` + `render_wiki_template` + `validate_wiki_template` + `validate_pdf_conversion` + `plan_source_ingest`。全部只生成当前 `plugin__siyuanmaster__` 前缀下的 Agent capability 模型名，并由思源 3.8.1 追加稳定哈希。
 
 ---
 
@@ -133,7 +133,7 @@
 | 品牌展示与 package 名 | — | P0 | plugin/package/README/i18n | 已实现 |
 | 技术 ID 过渡策略 | — | P0 | plugin.json + catalog.compatibility | 已实现 |
 | 未来 ID 切换纯决策 | — | P0 | `src/migration.ts` | 已实现（纯函数；**未**接 onload） |
-| 启动自动迁移旧 petal | — | P0 | `src/migration.ts`（前端与 kernel onload/reloadPolicy 均调用） | 已实现（幂等有界复制；永不删除/改写旧目录） |
+| 启动自动迁移旧 petal | — | P0 | `src/migration.ts`（仅 kernel PolicyStorage 单写者调用；前端不再直接读写策略存储） | 已实现（幂等有界复制；永不删除/改写旧目录；迁移与策略保存共用内核串行队列，审计复制经审计文件互斥原子合并） |
 | 双命名空间/旧别名双注册 | — | — | — | **未实现（单插件不可能）** |
 | Rust 工作区 | — | P0 | `crates/*` | 已实现（单元测试绿） |
 | 能力目录 + 生成/新鲜度 | — | P0 | catalog + scripts + tests | 已实现 |
@@ -245,7 +245,7 @@ catalog/capabilities.json
 - `pnpm build` **必须**执行 catalog check
 - 只声明当前技术命名空间；不声明 `legacyPlugin` 双命名空间
 
-工具 28 个（见 §2.3）。事务名：`SafeWriteTxn`。Wiki 模板另以 `catalog/wiki-templates.json` 为语义事实源，由生成脚本固化进 TS 内核，并受 freshness test 约束。
+工具 30 个（见 §2.3）。事务名：`SafeWriteTxn`。Wiki 模板另以 `catalog/wiki-templates.json` 为语义事实源，由生成脚本固化进 TS 内核，并受 freshness test 约束。
 
 ---
 

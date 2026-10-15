@@ -313,6 +313,13 @@ export interface MigrationStorageIO {
   readCurrent(key: string): Promise<unknown | undefined>;
   writeCurrent(key: string, value: unknown): Promise<void>;
   readLegacy(key: string): Promise<unknown | undefined>;
+  /**
+   * Optional atomic append path for the audit key. When provided, the audit
+   * copy merges these entries into a FRESH read of the current audit log
+   * under the audit file's own write mutex, so a concurrent audit append can
+   * never be lost to a stale-snapshot overwrite. Falls back to writeCurrent.
+   */
+  appendAudit?(entries: AuditEntry[]): Promise<void>;
   /** Optional clock for tests. */
   now?: () => Date;
 }
@@ -420,7 +427,11 @@ export async function runStorageMigration(
   }
   const auditCopied = migratedAudit.length > 0;
   if (auditCopied) {
-    await io.writeCurrent(AUDIT_STORAGE_KEY, migratedAudit);
+    if (io.appendAudit) {
+      await io.appendAudit(migratedAudit);
+    } else {
+      await io.writeCurrent(AUDIT_STORAGE_KEY, migratedAudit);
+    }
     writtenKeys.push(AUDIT_STORAGE_KEY);
   }
 

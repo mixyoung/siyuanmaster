@@ -59,9 +59,9 @@ describe("capability catalog freshness and identity", () => {
     expect(TXN_NAME).toBe("SafeWriteTxn");
   });
 
-  it("exposes 28 tools including the original 16 under siyuanmaster namespace", () => {
-    expect(TOOL_NAMES).toHaveLength(28);
-    expect(CATALOG_TOOLS).toHaveLength(28);
+  it("exposes 30 tools including the original 16 under siyuanmaster namespace", () => {
+    expect(TOOL_NAMES).toHaveLength(30);
+    expect(CATALOG_TOOLS).toHaveLength(30);
     expect(ORIGINAL_TOOL_COUNT).toBe(16);
     for (const name of ORIGINAL_16) {
       expect(TOOL_NAMES).toContain(name);
@@ -78,7 +78,7 @@ describe("capability catalog freshness and identity", () => {
     expect(TOOL_NAMES).toContain("validate_wiki_template");
     expect(TOOL_NAMES).toContain("validate_pdf_conversion");
     expect(TOOL_NAMES).toContain("plan_source_ingest");
-    expect(PLUGIN_TOOL_NAMES).toHaveLength(28);
+    expect(PLUGIN_TOOL_NAMES).toHaveLength(30);
     for (const fq of PLUGIN_TOOL_NAMES) {
       expect(fq.startsWith("plugin__siyuanmaster__")).toBe(true);
       expect(fq.startsWith("plugin__siyuan_agent_access__")).toBe(false);

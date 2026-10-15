@@ -2,16 +2,19 @@ import type * as kernel from "siyuan/kernel";
 import { clonePolicy, computePolicyFingerprint, DEFAULT_POLICY, normalizePolicy } from "./config";
 import {
   CURRENT_STORAGE_DIR,
+  AUDIT_STORAGE_KEY,
+  isCurrentAuditEntry,
   isPlausiblePolicy,
   LEGACY_STORAGE_DIR,
   legacyPetalFilePath,
+  migrateLegacyAuditEntries,
   POLICY_STORAGE_KEY,
   runStorageMigration,
   type MigrationStorageIO,
 } from "./migration";
-import { KERNEL_POLICY_TIMEOUT_MS, PolicySyncBlockedError, PolicyTaskQueue, type PolicyTask } from "./policy-sync";
+import { KERNEL_POLICY_TIMEOUT_MS, PolicySyncBlockedError, PolicyTaskQueue, serializeStorageKey, type PolicyTask } from "./policy-sync";
 import { confirmStorageFileMissing } from "./storage-state";
-import type { PluginPolicy } from "./types";
+import type { AuditEntry, PluginPolicy } from "./types";
 
 export type PolicyLoadState = "loading" | "loaded" | "initial-default" | "unavailable";
 export type PolicySaveState = "not_saved" | "unknown" | "saved";
@@ -37,6 +40,12 @@ export class PolicyStorage {
   constructor(
     private readonly api: kernel.ISiyuan,
     private readonly publish: (policy: PluginPolicy) => void,
+    /** Audit-file writer lane (the audit store). All migration writes to
+     * audit.json route through it so the two writers of that key serialize
+     * on one queue while policy saves stay on this class's own lane. */
+    private readonly writeAuditFile?: (
+      action: (task?: PolicyTask) => Promise<void>,
+    ) => Promise<void>,
   ) {}
 
   get metadata() {
@@ -45,10 +54,6 @@ export class PolicyStorage {
       policyLoadState: this.loadState,
       policyError: this.error || undefined,
     };
-  }
-
-  serializeAuditWrite(action: (task: PolicyTask) => Promise<void>): Promise<void> {
-    return this.queue.run(action);
   }
 
   reload(): Promise<PolicySnapshot> {
@@ -133,11 +138,54 @@ export class PolicyStorage {
     return {
       readCurrent: key => this.readCurrent(task, key),
       readLegacy: key => this.readLegacy(task, key),
+      appendAudit: entries => {
+        const run = async (laneTask?: PolicyTask): Promise<void> => {
+          // Merge against a FRESH read under the audit-key mutex: a live
+          // audit append that landed meanwhile must never be overwritten by
+          // this pass's stale snapshot.
+          const wait = laneTask?.wait ?? (<T>(action: () => Promise<T>) => action());
+          const probe: PolicyTask = { check: () => undefined, wait };
+          const fresh = await this.readCurrent(probe, AUDIT_STORAGE_KEY);
+          if (
+            fresh !== undefined &&
+            (!Array.isArray(fresh) || !fresh.every(isCurrentAuditEntry))
+          ) {
+            throw new Error("Current audit is invalid; refusing to overwrite");
+          }
+          const current = (fresh as AuditEntry[] | undefined) ?? [];
+          const merged = migrateLegacyAuditEntries(current, entries);
+          if (merged.length === current.length) return;
+          await wait(() =>
+            this.api.storage.put(AUDIT_STORAGE_KEY, JSON.stringify(merged)),
+          );
+          const observed = await this.readCurrent(probe, AUDIT_STORAGE_KEY);
+          if (
+            !Array.isArray(observed) ||
+            observed.length !== merged.length ||
+            !observed.every(isCurrentAuditEntry)
+          ) {
+            throw new Error("Migration write readback mismatch: audit.json");
+          }
+        };
+        return this.writeAuditFile
+          ? this.writeAuditFile(run)
+          : serializeStorageKey(AUDIT_STORAGE_KEY, run);
+      },
       writeCurrent: async (key, value) => {
-        await task.wait(() => this.api.storage.put(key, JSON.stringify(value)));
-        const observed = await this.readCurrent(task, key);
-        if (JSON.stringify(observed) !== JSON.stringify(value)) {
-          throw new Error(`Migration write readback mismatch: ${key}`);
+        const write = async () => {
+          await task.wait(() => this.api.storage.put(key, JSON.stringify(value)));
+          const observed = await this.readCurrent(task, key);
+          if (JSON.stringify(observed) !== JSON.stringify(value)) {
+            throw new Error(`Migration write readback mismatch: ${key}`);
+          }
+        };
+        // The audit file has a second writer (the audit lane); route its
+        // writes through the shared per-key mutex. Real deployments use the
+        // appendAudit path above; this guards the plain-write fallback.
+        if (key === AUDIT_STORAGE_KEY) {
+          await serializeStorageKey(key, write);
+        } else {
+          await write();
         }
       },
     };

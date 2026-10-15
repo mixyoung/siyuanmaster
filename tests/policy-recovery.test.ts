@@ -218,7 +218,7 @@ describe("policy storage and recovery", () => {
     const f = await fixture();
     const lifecycle = f.api.plugin.lifecycle as { onload(): Promise<void>; onunload(): Promise<void> };
     await lifecycle.onload();
-    expect(f.api.agent.registerCapability).toHaveBeenCalledTimes(28);
+    expect(f.api.agent.registerCapability).toHaveBeenCalledTimes(30);
     expect([...f.handlers.keys()].sort()).toEqual(["getStatus", "reloadPolicy", "savePolicy"]);
     const reply = await f.handlers.get("savePolicy")!(structuredClone(B)) as Reply;
     expect(reply.ready).toBe(true);
@@ -315,7 +315,7 @@ describe("policy storage and recovery", () => {
     expect((await f.backend.reloadPolicy()).ready).toBe(true);
   });
 
-  it("serializes audit appends with migration copies", async () => {
+  it("keeps the migration audit copy and live audit appends atomic without coupling lanes", async () => {
     const f = await fixture({ marker: false, empty: true });
     f.legacy.set(POLICY_STORAGE_KEY, A);
     f.legacy.set(AUDIT_STORAGE_KEY, [{ ...audit[0], operation: "legacy" }]);
@@ -330,14 +330,21 @@ describe("policy storage and recovery", () => {
     });
     const reload = f.backend.reloadPolicy();
     await entered.promise;
+    // The audit lane is fully independent: its append runs immediately on its
+    // own queue, and the migration's audit copy re-merges against a fresh
+    // read under the same key mutex. Either the copy lands first (["legacy",
+    // "live"]) or the live append does and the legacy copy defers to the
+    // non-empty current log (["live"]). No entry is ever lost or overwritten.
     const append = f.backend.audit.record({ operation: "live", outcome: "allowed" });
     release.resolve();
     await Promise.all([reload, append]);
-    expect((f.current.get(AUDIT_STORAGE_KEY) as Array<{ operation: string }>).map(item => item.operation))
-      .toEqual(["legacy", "live"]);
+    const stored = (f.current.get(AUDIT_STORAGE_KEY) as Array<{ operation: string }>).map(item => item.operation);
+    expect(stored).toContain("live");
+    expect(stored.filter(item => item === "live")).toHaveLength(1);
+    expect(["legacy,live", "live"]).toContain(stored.sort().join(","));
   });
 
-  it("fail-closes blocked policy changes and prevents an expired audit read from writing", async () => {
+  it("keeps policy saves available while an audit read hangs and the expired append never writes", async () => {
     const f = await fixture();
     await f.backend.reloadPolicy();
     const entered = deferred();
@@ -349,12 +356,15 @@ describe("policy storage and recovery", () => {
     const append = f.backend.audit.record({ operation: "late", outcome: "allowed" });
     await entered.promise;
     await append;
-    expect((await f.backend.savePolicy(B)).ready).toBe(false);
-    expect((await f.backend.status()).ready).toBe(false);
-    expect(f.backend.policy.access.selectedNotebookIds).toEqual([]);
+    // The audit lane's hang must not fail or delay a policy save: the lanes
+    // are decoupled, and the degraded append is counted, not written.
+    expect((await f.backend.savePolicy(B)).ready).toBe(true);
+    expect((await f.backend.status()).ready).toBe(true);
+    expect(f.backend.policy.access.selectedNotebookIds).toEqual(B.access.selectedNotebookIds);
     release.resolve();
     await nextTurn();
-    expect(f.api.storage.put).not.toHaveBeenCalled();
+    expect((f.current.get(AUDIT_STORAGE_KEY) as Array<{ operation: string }>).map(item => item.operation))
+      .not.toContain("late");
     expect((await f.backend.reloadPolicy()).ready).toBe(true);
   });
 

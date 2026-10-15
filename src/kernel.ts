@@ -68,6 +68,28 @@ import {
   type WikiStatus,
   type WikiTemplateLocale,
 } from "./wiki-template";
+import { CoverageStore } from "./coverage-store";
+import {
+  buildSearchDocumentPageSql,
+  buildSearchMatchedBlocksSql,
+  decodeSearchCursor,
+  encodeSearchCursor,
+  pickBestMatchPerDocument,
+  type SearchMatchRow,
+} from "./notes-search";
+import {
+  computeAccessFingerprint,
+  computeScopeFingerprint,
+  documentComplete,
+  MAX_SCOPE_DOCUMENTS,
+  SCOPE_NEXT_DOCUMENTS,
+  SCOPE_STATUS_DOCUMENTS,
+  scopeComplete,
+  scopeCounts,
+  slicePage,
+  type ScopeMember,
+  type ScopeSession,
+} from "./scope-read";
 import {
   evaluateOperation,
   mergeTags,
@@ -129,22 +151,11 @@ class PolicyViolation extends Error {
   }
 }
 
-interface SearchRow extends Record<string, unknown> {
-  matched_id: string;
-  document_id: string;
-  box: string;
-  hpath: string;
-  title: string;
-  tags: string;
-  snippet: string;
-  block_type: string;
-  updated: string;
-}
-
 interface ToolRunMetadata {
   documentId?: string;
   notebookId?: string;
   targetNotebookId?: string;
+  sessionId?: string;
   confirmed?: boolean;
   contentLength?: number;
   preview?: boolean;
@@ -408,16 +419,17 @@ function taggingProperty(): Record<string, unknown> {
 class SiYuanMasterKernelPlugin {
   private readonly api: kernel.ISiyuan = siyuan;
   private readonly client = new KernelApiClient(this.api);
-  private readonly audit = new AuditStore(
-    this.api,
-    () => this.policy,
-    action => this.policyStorage.serializeAuditWrite(action),
-  );
+  private readonly audit = new AuditStore(this.api, () => this.policy);
   private readonly knowledgeRegistry = new KnowledgeRegistryStore(
     this.api.storage,
   );
+  private readonly coverage = new CoverageStore(this.api);
   private policy: PluginPolicy = clonePolicy(DEFAULT_POLICY);
-  private readonly policyStorage = new PolicyStorage(this.api, policy => { this.policy = policy; });
+  private readonly policyStorage = new PolicyStorage(
+    this.api,
+    policy => { this.policy = policy; },
+    action => this.audit.serializeFileWrite(action),
+  );
   private readonly registeredCapabilities: string[] = [];
   private readonly structurePreviews = new Map<
     string,
@@ -458,6 +470,7 @@ class SiYuanMasterKernelPlugin {
     await this.registerReadTool();
     await this.registerResolveDocumentTool();
     await this.registerReadNoteSegmentsTool();
+    await this.registerScopeReadTools();
     await this.registerKnowledgeSourceTool();
     await this.registerWikiAuthorityTool();
     await this.registerKnowledgeStatusTool();
@@ -957,26 +970,30 @@ class SiYuanMasterKernelPlugin {
             "exact block ID + expected content/hash + reference impact + Safe Write Transaction",
           safeWriteTransaction:
             "snapshot → confirm → recheck → execute once → readback; no auto-retry on unknown",
+          scopeRead:
+            "paginated full listing (afterPath + member fingerprint) and full-body paging (offset + export hash) with a coverage ledger that only reports complete on exact tiling",
           knowledgeRegistry:
-            "metadata-only Source Manifest + Authority Registry with access-filtered status and deterministic candidates",
+            "optional metadata-only Source Manifest + Authority Registry with access-filtered status and deterministic candidates",
           authorityLookup:
-            "registered source/title/alias/type lookup before broad note search",
+            "optional registered source/title/alias/type lookup for workflows that opt into the registry",
           originalToolsPreserved: 16,
-          totalTools: 28,
+          totalTools: 30,
           wikiTemplates:
-            "versioned catalog + preview-only renderer + structure validator; no note writes",
+            "optional versioned catalog + preview-only renderer + structure validator; no note writes",
           sourceIngestPlan:
-            "read-only single-source state machine; plans registry, discovery, template, verification, and later gated writes without executing them",
+            "optional read-only single-source state machine for workflows that opt into source ingest",
         },
         toolWorkflow: [
           "Call get_policy first.",
           "Use list_accessible_notebooks before choosing a notebook.",
-          "Use list_document_tree for bounded structural browsing without note bodies.",
+          "For ordinary knowledge questions, search ALL authorized notes with search_notes; no registration, Wiki identity, or classification is a precondition for a note to participate in an answer.",
+          "Use list_document_tree for bounded structural browsing without note bodies; continue truncated listings with afterPath plus scopeFingerprint and restart the listing on state_changed.",
           "Use resolve_document only to look up a human path; never write by path.",
-          "Use search_notes / read_note / read_note_segments for retrieval.",
-          "When knowledgeRegistry is available, use find_wiki_candidates before broad search and register sources/authorities only when the current task authorizes metadata mutation.",
-          "When wikiTemplates is available, list the creation gate, render a preview, fill the draft, validate it, and only then use a separately authorized create/update tool.",
-          "Use plan_source_ingest to turn one exact Raw source plus registry/discovery evidence into a read-only state and ordered next-step plan; never treat planned mutations as executed or pre-authorized.",
+          "Use read_note for full content, paging long bodies with offset plus expectedContentHash; restart a document from offset 0 on state_changed. Use read_note_segments for outline navigation.",
+          "When a task targets one directory, resolve the exact notebook and root document IDs, open_scope_read that scope, read every member document (the root document included) via read_note with scopeSessionId, and verify with scope_read_status before claiming the scope was fully read.",
+          "Never report a scope as fully read while any member is unread, failed, truncated, changed, or blocked, or while the scope fingerprint changed.",
+          "Write results back into the existing structure under the active write policy; written notes join the knowledge base for later questions without any extra registration.",
+          "Registry lookups, Wiki templates, and ingest planning are optional capabilities for tasks that explicitly need those workflows; they never gate search or answering.",
           "For decisions marked confirm, obtain user approval before retrying with confirmed=true.",
           "In tag mode ask, pass tagging.decision='add' or 'skip' for each write.",
           "Use only plugin__siyuanmaster__* tools when policy enforcement is required.",
@@ -1064,6 +1081,16 @@ class SiYuanMasterKernelPlugin {
               maximum: 500,
               description: "Maximum returned documents, 1-500. Default 200.",
             },
+            afterPath: {
+              type: "string",
+              description:
+                "Continuation cursor: physical path of the last row from the previous page's nextAfterPath. Requires scopeFingerprint.",
+            },
+            scopeFingerprint: {
+              type: "string",
+              description:
+                "Scope fingerprint returned by the first page. Every continuation page verifies it; a mid-enumeration change (move, add, delete, swap) fails with state_changed and the listing must restart.",
+            },
             confirmed: confirmedProperty(),
           },
           required: ["notebookId"],
@@ -1078,6 +1105,14 @@ class SiYuanMasterKernelPlugin {
             ? input.notebookId
             : undefined;
         const parentDocumentId = optionalString(input.parentDocumentId);
+        const afterPath = optionalString(input.afterPath);
+        const expectedFingerprint = optionalSha256(input.scopeFingerprint);
+        if (afterPath && !expectedFingerprint) {
+          throw new PolicyViolation(
+            "invalid_request",
+            "afterPath continuation requires the scopeFingerprint from the first page",
+          );
+        }
         return this.runTool(
           "list_document_tree",
           true,
@@ -1108,13 +1143,41 @@ class SiYuanMasterKernelPlugin {
             }
             const maxDepth = boundedInteger(input.maxDepth, 3, 1, 10);
             const maxNodes = boundedInteger(input.maxNodes, 200, 1, 500);
+            // Pagination contract: the fingerprint hashes the full eligible
+            // member list (id, path, updated) and is returned on every call.
+            // Continuation pages verify it against a fresh recomputation; a
+            // count-preserving swap or a move with an unchanged max(updated)
+            // still changes it, so afterPath keyset paging can never silently
+            // skip or duplicate documents.
+            const members = await this.client.listScopeMembers({
+              notebookId: notebook.id,
+              parentDocument: parentContext?.document,
+              maxDepth,
+            });
+            const scopeFingerprint = await computeScopeFingerprint(
+              { notebookId: notebook.id, rootDocumentId: parentContext?.document.id ?? null },
+              members,
+            );
+            if (
+              expectedFingerprint &&
+              expectedFingerprint !== scopeFingerprint
+            ) {
+              throw new PolicyViolation(
+                "state_changed",
+                "document tree changed during enumeration; restart the listing from the first page",
+              );
+            }
             const listing = await this.client.listDocumentTree({
               notebookId: notebook.id,
               parentDocument: parentContext?.document,
               maxDepth,
               maxNodes,
+              afterPath: afterPath ?? undefined,
             });
             const returnedCount = listing.rows.length;
+            const rowsEnd = returnedCount > 0
+              ? listing.rows[returnedCount - 1].path
+              : null;
             return {
               notebook: { id: notebook.id, name: notebook.name },
               rootDocumentId: parentContext?.document.id ?? null,
@@ -1128,6 +1191,9 @@ class SiYuanMasterKernelPlugin {
                 listing.eligibleCount < listing.totalCount,
               truncatedByNodeLimit:
                 returnedCount < listing.eligibleCount,
+              scopeFingerprint,
+              nextAfterPath:
+                returnedCount === maxNodes ? rowsEnd : null,
               tree: buildDocumentTree(
                 listing.rows,
                 parentContext?.document.id,
@@ -1144,22 +1210,32 @@ class SiYuanMasterKernelPlugin {
       "search_notes",
       genericToolConfig(
         "Search Allowed Notes",
-        "Searches only documents and blocks inside notebooks allowed by the active policy. Returns compact document-level matches; use read_note for full content.",
+        "Searches only documents and blocks inside notebooks allowed by the active policy. Aggregates per document (one best block each), pages documents in stable document-ID order, and can narrow to one exact document subtree. Scope filtering precedes ranking and paging; use read_note for full content.",
         {
           type: "object",
           properties: {
             query: {
               type: "string",
-              description: "Plain-text query, 1-256 characters.",
+              description: "Plain-text query, 1-256 characters. Matched literally; % and _ are not wildcards.",
             },
             notebookId: {
               type: "string",
               description:
                 "Optional allowed notebook ID to narrow the search.",
             },
+            rootDocumentId: {
+              type: "string",
+              description:
+                "Optional exact document ID; restricts results to that document and its descendant documents.",
+            },
             limit: {
               type: "number",
-              description: "Maximum results, 1-50. Default 20.",
+              description: "Maximum documents per page, 1-50. Default 20.",
+            },
+            cursor: {
+              type: "string",
+              description:
+                "Opaque continuation cursor from nextCursor. Binds the query text, scope, and accessible-notebook set; a mismatched cursor must restart from the first page.",
             },
             confirmed: confirmedProperty(),
           },
@@ -1190,55 +1266,86 @@ class SiYuanMasterKernelPlugin {
             if (notebookIds.length === 0) {
               return { count: 0, matches: [] };
             }
+            const accessSha = await computeAccessFingerprint(notebookIds);
+            const rootDocumentId = optionalString(input.rootDocumentId);
+            let scope:
+              | { rootDocumentId: string; directory: string; notebookId: string }
+              | undefined;
+            if (rootDocumentId) {
+              const context = await this.assertExactDocumentAllowed(
+                rootDocumentId,
+                "rootDocumentId",
+              );
+              scope = {
+                rootDocumentId: context.document.id,
+                directory: context.document.path.replace(/\.sy$/i, ""),
+                notebookId: context.document.box,
+              };
+            }
+            const rawCursor = optionalString(input.cursor);
+            const cursor = rawCursor ? decodeSearchCursor(rawCursor) : undefined;
+            if (rawCursor && !cursor) {
+              throw new PolicyViolation(
+                "invalid_request",
+                "cursor is not a valid search continuation token",
+              );
+            }
+            if (
+              cursor &&
+              (cursor.q !== query ||
+                cursor.notebookId !== optionalString(input.notebookId) ||
+                cursor.rootDocumentId !== rootDocumentId ||
+                cursor.accessSha !== accessSha)
+            ) {
+              throw new PolicyViolation(
+                "invalid_request",
+                "cursor does not match the current query, scope, or accessible notebooks; restart from the first page",
+              );
+            }
 
-            const boxes = notebookIds
-              .map((id) => `'${escapeSqlLiteral(id)}'`)
-              .join(",");
-            const pattern = `%${escapeSqlLiteral(query)}%`;
-            const rows = await this.client.sql<SearchRow>(
-              `SELECT
-                 b.id AS matched_id,
-                 b.root_id AS document_id,
-                 b.box AS box,
-                 d.hpath AS hpath,
-                 d.content AS title,
-                 d.tag AS tags,
-                 b.content AS snippet,
-                 b.type AS block_type,
-                 b.updated AS updated
-               FROM blocks b
-               JOIN blocks d ON d.id = b.root_id
-               WHERE b.box IN (${boxes})
-                 AND (
-                   COALESCE(b.content, '') LIKE '${pattern}'
-                   OR COALESCE(b.name, '') LIKE '${pattern}'
-                   OR COALESCE(b.tag, '') LIKE '${pattern}'
-                 )
-               ORDER BY b.updated DESC
-               LIMIT ${limit * 3}`,
+            const pageRows = await this.client.sql<{ document_id: string }>(
+              buildSearchDocumentPageSql({
+                query,
+                notebookIds,
+                limit,
+                afterDocumentId: cursor?.afterDocumentId,
+                scope,
+              }),
             );
-            const seen = new Set<string>();
-            const matches = rows
-              .filter((row) => {
-                if (seen.has(row.document_id)) {
-                  return false;
-                }
-                seen.add(row.document_id);
-                return true;
-              })
-              .slice(0, limit)
-              .map((row) => ({
-                documentId: row.document_id,
-                matchedBlockId: row.matched_id,
-                notebookId: row.box,
-                title: row.title,
-                hPath: row.hpath,
-                tags: splitStoredTags(row.tags),
-                snippet: row.snippet.slice(0, 360),
-                blockType: row.block_type,
-                updated: row.updated,
-              }));
-            return { count: matches.length, matches };
+            const moreDocuments = pageRows.length > limit;
+            const page = pageRows.slice(0, limit).map((row) => row.document_id);
+            if (page.length === 0) {
+              return { count: 0, moreDocuments: false, matches: [] };
+            }
+            const rows = await this.client.sql<SearchMatchRow>(
+              buildSearchMatchedBlocksSql({
+                query,
+                notebookIds,
+                documentIds: page,
+              }),
+            );
+            const matches = pickBestMatchPerDocument(rows).map((row) => ({
+              documentId: row.document_id,
+              matchedBlockId: row.matched_id,
+              notebookId: row.box,
+              title: row.title,
+              hPath: row.hpath,
+              tags: splitStoredTags(row.tags),
+              snippet: row.snippet.slice(0, 360),
+              blockType: row.block_type,
+              updated: row.updated,
+            }));
+            const nextCursor =
+              moreDocuments && page.length > 0
+                ? encodeSearchCursor({
+                    q: query,
+                    notebookId: optionalString(input.notebookId),
+                    rootDocumentId,
+                    accessSha,
+                    afterDocumentId: page[page.length - 1],
+                  })
+                : undefined;
+            return { count: matches.length, moreDocuments, nextCursor, matches };
           },
         );
       },
@@ -1249,28 +1356,113 @@ class SiYuanMasterKernelPlugin {
     documentIdValue: unknown,
     maxCharsValue: unknown,
     confirmed: boolean,
+    offsetValue?: unknown,
+    expectedHashValue?: unknown,
+    scopeSessionIdValue?: unknown,
   ): Promise<Record<string, unknown>> {
     this.ensureOperation("read", confirmed);
-    const context = await this.assertDocumentAllowed(documentIdValue);
+    const scopeSessionId = optionalString(scopeSessionIdValue);
+    if (scopeSessionId) {
+      const session = this.coverage.getSession(scopeSessionId);
+      if (!session) {
+        throw new PolicyViolation(
+          "invalid_request",
+          `unknown scope session: ${scopeSessionId}`,
+        );
+      }
+    }
+    let context: DocumentContext;
+    try {
+      context = await this.assertDocumentAllowed(documentIdValue);
+    } catch (error) {
+      if (
+        scopeSessionId &&
+        error instanceof PolicyViolation &&
+        (error.code === "operation_denied" ||
+          error.code === "notebook_denied")
+      ) {
+        // Permission was withdrawn mid-task: mark the scope document so the
+        // session reports blocked instead of silently staying pending.
+        this.markScopeDocumentBestEffort(
+          scopeSessionId,
+          documentIdValue,
+          "blocked",
+          error.message,
+        );
+      }
+      throw error;
+    }
     const maxChars = boundedInteger(
       maxCharsValue,
       20_000,
       1_000,
       50_000,
     );
+    const offset = boundedInteger(offsetValue, 0, 0, 2_000_000);
+    const expectedContentHash = optionalSha256(expectedHashValue);
+    if (offset > 0 && !expectedContentHash) {
+      throw new PolicyViolation(
+        "invalid_request",
+        "offset pages require the expectedContentHash returned by the first page",
+      );
+    }
+    if (scopeSessionId) {
+      this.requireScopeDocument(scopeSessionId, context.document.id);
+    }
     const exported = await this.client.exportMarkdown(
       context.document.id,
     );
-    const content = exported.content.slice(0, maxChars);
+    // Stateless version binding: every page re-derives the hash of the full
+    // export and continues only against the same version. Pages can never
+    // splice two different document versions together.
+    const contentHash = await computeContentHash(exported.content);
+    if (expectedContentHash && expectedContentHash !== contentHash) {
+      if (scopeSessionId) {
+        this.markScopeDocumentBestEffort(
+          scopeSessionId,
+          context.document.id,
+          "changed",
+          "content hash changed between pages",
+        );
+      }
+      throw new PolicyViolation(
+        "state_changed",
+        "note content changed since the first page; restart this document from offset 0",
+      );
+    }
+    const page = slicePage(exported.content, offset, maxChars);
+    if (scopeSessionId) {
+      try {
+        this.coverage.recordReadPage({
+          sessionId: scopeSessionId,
+          documentId: context.document.id,
+          updated: context.document.updated,
+          contentHash,
+          contentLength: exported.content.length,
+          start: offset,
+          end: offset + page.content.length,
+        });
+      } catch (error) {
+        throw new PolicyViolation(
+          "invalid_request",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     return {
       documentId: context.document.id,
       notebookId: context.document.box,
       title: context.document.content,
       hPath: exported.hPath || context.document.hpath,
       tags: splitStoredTags(context.document.tag),
-      content,
+      content: page.content,
+      offset,
+      /** SHA-256 of the full export this page was cut from. */
+      contentHash,
+      /** Full-export length in UTF-16 code units. */
       contentLength: exported.content.length,
-      truncated: content.length < exported.content.length,
+      nextOffset: page.nextOffset,
+      truncated: page.nextOffset !== null,
       created: context.document.created,
       updated: context.document.updated,
     };
@@ -1281,7 +1473,7 @@ class SiYuanMasterKernelPlugin {
       "read_note",
       genericToolConfig(
         "Read Allowed Note",
-        "Reads Markdown only after resolving the target block to its document and enforcing the notebook policy. Content is bounded for context safety.",
+        "Reads Markdown only after resolving the target block to its document and enforcing the notebook policy. Pages the full export by UTF-16 offset: pass offset + expectedContentHash to continue a document; pages are cut from one version and never splice. Optional scopeSessionId records full-coverage progress.",
         {
           type: "object",
           properties: {
@@ -1293,7 +1485,22 @@ class SiYuanMasterKernelPlugin {
             maxChars: {
               type: "number",
               description:
-                "Maximum Markdown characters returned, 1000-50000.",
+                "Maximum Markdown characters returned per page, 1000-50000.",
+            },
+            offset: {
+              type: "number",
+              description:
+                "UTF-16 offset of this page's first character; must equal the previous page's nextOffset. Requires expectedContentHash.",
+            },
+            expectedContentHash: {
+              type: "string",
+              description:
+                "contentHash from the document's first page. Any mismatch fails state_changed and the document must be restarted at offset 0.",
+            },
+            scopeSessionId: {
+              type: "string",
+              description:
+                "Coverage session from open_scope_read. Each returned page is recorded; complete requires exact tiling of [0, contentLength).",
             },
             confirmed: confirmedProperty(),
           },
@@ -1317,6 +1524,9 @@ class SiYuanMasterKernelPlugin {
               input.documentId,
               input.maxChars,
               confirmed,
+              input.offset,
+              input.expectedContentHash,
+              input.scopeSessionId,
             ),
         );
       },
@@ -1814,6 +2024,260 @@ class SiYuanMasterKernelPlugin {
                 maxCharsPerBlock: limits.maxCharsPerBlock,
                 maxOutlineBlocks: limits.maxOutlineBlocks,
               },
+            };
+          },
+        );
+      },
+    );
+  }
+
+  private requireScopeDocument(sessionId: string, documentId: string): void {
+    const session = this.coverage.getSession(sessionId);
+    if (!session) {
+      throw new PolicyViolation(
+        "invalid_request",
+        `unknown scope session: ${sessionId}`,
+      );
+    }
+    if (!session.documents[documentId]) {
+      throw new PolicyViolation(
+        "invalid_request",
+        `document is not part of scope session ${sessionId}`,
+      );
+    }
+  }
+
+  private markScopeDocumentBestEffort(
+    sessionId: string,
+    documentIdValue: unknown,
+    status: "failed" | "truncated" | "changed" | "blocked",
+    error?: string,
+  ): void {
+    try {
+      const documentId =
+        typeof documentIdValue === "string" ? documentIdValue : "";
+      if (!documentId) return;
+      this.coverage.markDocument(sessionId, documentId, status, error);
+    } catch {
+      // Coverage marking must never mask the original tool error.
+    }
+  }
+
+  private scopeShardSuggestions(
+    members: readonly ScopeMember[],
+    rootPath: string | null,
+  ): string[] {
+    // Deterministic child-root suggestions: direct children of the scope
+    // root (or top level when unrooted), by physical path prefix.
+    const prefix = rootPath ? rootPath.replace(/\.sy$/i, "") : "";
+    const depths = new Map<string, number>();
+    const suggestions: string[] = [];
+    for (const member of members) {
+      const rest = prefix ? member.path.slice(prefix.length + 1) : member.path.slice(1);
+      if (!rest) continue;
+      const segments = rest.split("/").filter(Boolean);
+      if (segments.length < (prefix ? 1 : 2)) continue;
+      const childPath = prefix
+        ? `${prefix}/${segments[0]}`
+        : `/${segments[0].replace(/\.sy$/i, "")}`;
+      if (depths.has(childPath)) continue;
+      depths.set(childPath, 1);
+      suggestions.push(member.id);
+      if (suggestions.length >= 10) break;
+    }
+    return suggestions;
+  }
+
+  private async registerScopeReadTools(): Promise<void> {
+    await this.registerTool(
+      "open_scope_read",
+      genericToolConfig(
+        "Open Or Resume A Scope Read",
+        "Records the complete document list of one allowed notebook or one exact document subtree and returns a coverage session. Every member (the root document included) must be fully read via read_note with scopeSessionId before the scope counts as complete. Resumes the existing session when the scope fingerprint still matches; rejects oversized scopes with child-root shard suggestions instead of trimming.",
+        {
+          type: "object",
+          properties: {
+            notebookId: {
+              type: "string",
+              description: "Allowed notebook ID whose full tree defines the scope.",
+            },
+            rootDocumentId: {
+              type: "string",
+              description:
+                "Optional exact document ID; the scope becomes that document plus all its descendants.",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["notebookId"],
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        const notebookId =
+          typeof input.notebookId === "string"
+            ? input.notebookId
+            : undefined;
+        return this.runTool(
+          "open_scope_read",
+          true,
+          { notebookId, confirmed },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            const notebook = await this.assertNotebookAllowed(input.notebookId);
+            const rootDocumentId = optionalString(input.rootDocumentId);
+            const rootContext = rootDocumentId
+              ? await this.assertExactDocumentAllowed(
+                  rootDocumentId,
+                  "rootDocumentId",
+                )
+              : undefined;
+            if (rootContext && rootContext.document.box !== notebook.id) {
+              throw new PolicyViolation(
+                "invalid_request",
+                "rootDocumentId does not belong to notebookId",
+              );
+            }
+            const members = await this.client.listScopeMembers({
+              notebookId: notebook.id,
+              parentDocument: rootContext?.document,
+            });
+            if (members.length > MAX_SCOPE_DOCUMENTS) {
+              throw new PolicyViolation(
+                "invalid_request",
+                `scope has ${members.length} documents, above the ${MAX_SCOPE_DOCUMENTS} per-session cap; open child-root shard scopes instead (suggestions: ${this.scopeShardSuggestions(members, rootContext?.document.path ?? null).join(", ") || "none at the first level"})`,
+              );
+            }
+            const scopeFingerprint = await computeScopeFingerprint(
+              {
+                notebookId: notebook.id,
+                rootDocumentId: rootContext?.document.id ?? null,
+              },
+              members,
+            );
+            const { session, resumed } = await this.coverage.openScope({
+              notebookId: notebook.id,
+              rootDocumentId: rootContext?.document.id ?? null,
+              scopeFingerprint,
+              members,
+            });
+            const pending = Object.entries(session.documents)
+              .filter(([, document]) => document.status === "pending" && !documentComplete(document))
+              .map(([id, document]) => ({
+                documentId: id,
+                path: document.path,
+                updated: document.updated,
+              }))
+              .slice(0, SCOPE_NEXT_DOCUMENTS);
+            return {
+              sessionId: session.sessionId,
+              resumed,
+              scopeFingerprint,
+              documentCount: Object.keys(session.documents).length,
+              capacity: { maxDocumentsPerSession: MAX_SCOPE_DOCUMENTS },
+              nextDocuments: pending,
+            };
+          },
+        );
+      },
+    );
+
+    await this.registerTool(
+      "scope_read_status",
+      genericToolConfig(
+        "Scope Read Coverage Status",
+        "Reports exact read coverage for one scope session: per-state counts, remaining documents, and the overall complete flag. Completion requires an unchanged member fingerprint, persisted coverage writes, every document's returned pages tiling [0, contentLength) under one content hash, and no unread, failed, changed, or blocked members. Completed documents are re-verified on every call.",
+        {
+          type: "object",
+          properties: {
+            sessionId: {
+              type: "string",
+              description: "Session ID returned by open_scope_read.",
+            },
+            includeDocuments: {
+              type: "boolean",
+              description:
+                "Include a bounded per-document status list (first 200 documents).",
+            },
+            confirmed: confirmedProperty(),
+          },
+          required: ["sessionId"],
+          additionalProperties: false,
+        },
+        true,
+      ),
+      async (input) => {
+        const confirmed = input.confirmed === true;
+        return this.runTool(
+          "scope_read_status",
+          true,
+          { sessionId: optionalString(input.sessionId), confirmed },
+          async () => {
+            this.ensureOperation("read", confirmed);
+            const sessionId = stringInput(input.sessionId, "sessionId", {
+              maxLength: 64,
+            });
+            const stored = this.coverage.getSession(sessionId);
+            if (!stored) {
+              throw new PolicyViolation(
+                "invalid_request",
+                `unknown scope session: ${sessionId}`,
+              );
+            }
+            // Live scope re-verification: the member fingerprint must still
+            // match the session's; any completed document whose updated
+            // differs is demoted to changed with coverage reset.
+            const notebook = await this.assertNotebookAllowed(stored.notebookId);
+            const rootContext = stored.rootDocumentId
+              ? await this.assertExactDocumentAllowed(
+                  stored.rootDocumentId,
+                  "rootDocumentId",
+                )
+              : undefined;
+            const members = await this.client.listScopeMembers({
+              notebookId: notebook.id,
+              parentDocument: rootContext?.document,
+            });
+            const liveFingerprint = await computeScopeFingerprint(
+              {
+                notebookId: stored.notebookId,
+                rootDocumentId: stored.rootDocumentId,
+              },
+              members,
+            );
+            const scopeChanged = liveFingerprint !== stored.scopeFingerprint;
+            const session = scopeChanged ? stored : await this.coverage.resyncSession(sessionId, members);
+            const counts = scopeCounts(session);
+            const documents = input.includeDocuments === true
+              ? Object.entries(session.documents)
+                  .slice(0, SCOPE_STATUS_DOCUMENTS)
+                  .map(([id, document]) => ({
+                    documentId: id,
+                    path: document.path,
+                    updated: document.updated,
+                    status: documentComplete(document) ? "complete" : document.status,
+                    covered: document.coverage,
+                    contentLength: document.contentLength,
+                    lastError: document.lastError,
+                  }))
+              : undefined;
+            const remaining = Object.entries(session.documents)
+              .filter(([, document]) => !documentComplete(document) && document.status === "pending")
+              .map(([id, document]) => ({ documentId: id, path: document.path }))
+              .slice(0, SCOPE_NEXT_DOCUMENTS);
+            return {
+              sessionId,
+              scopeChanged,
+              ...(scopeChanged
+                ? { scopeChangedMessage: "scope membership changed; open a new session or re-open the same scope to re-enumerate" }
+                : {}),
+              complete: !scopeChanged && scopeComplete(session),
+              persistDegraded: session.persistDegraded === true,
+              loadError: this.coverage.loadErrorState(),
+              counts,
+              remaining,
+              documents,
             };
           },
         );

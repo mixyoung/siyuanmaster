@@ -1,6 +1,6 @@
 ---
 name: siyuanmaster
-description: Use a user's SiYuan notes through the SiYuanMaster (technical id siyuanmaster) policy-aware plugin tools for bounded document-tree browsing, path lookup, segmented long reads, scoped search, reading, writing, safe block edit, safe two-stage rename and move, source-grounded knowledge ingest and compounding with A/A-raw topic units, query promotion, layered Error Book recording and linting, summarization, optional tagging, memory persistence, metadata-only audit review, and user-authorized offline webpage archiving with native attachment upload and sandboxed local preview.
+description: Use a user's SiYuan notes through the SiYuanMaster (technical id siyuanmaster) policy-aware plugin tools for bounded document-tree browsing with change-detected pagination, path lookup, paginated full-body reads with content-hash version binding, scope-complete directory reads with a coverage ledger, per-document aggregated scoped search, writing, safe block edit, safe two-stage rename and move, optional source-grounded knowledge ingest and compounding with A/A-raw topic units, query promotion, layered Error Book recording and linting, summarization, optional tagging, memory persistence, metadata-only audit review, and user-authorized offline webpage archiving with native attachment upload and sandboxed local preview.
 ---
 
 # SiYuanMaster (technical id: siyuanmaster)
@@ -25,6 +25,16 @@ The native SiYuan MCP server may expose other administrator-level tools. Their p
 6. Respect every `truncated=true` result; request another bounded tree or window only when required.
 7. Do not infer the existence or name of inaccessible notebooks from errors.
 
+## Authorized knowledge base and full-scope reads
+
+- The knowledge base for ordinary questions is the **full set of authorized notes**: whatever the policy allows is searchable and readable. No registration, Wiki identity, or classification is ever a precondition for a note to participate in an answer.
+- `read_note` pages the full export by UTF-16 `offset` with `expectedContentHash` from the first page. A `state_changed` reply means the document changed mid-read: restart that document from `offset 0`; never splice pages from two versions.
+- `list_document_tree` continues truncated listings with `afterPath` plus `scopeFingerprint`; a `state_changed` reply means the tree changed mid-enumeration: restart the listing from the first page.
+- When a task targets one directory, resolve the exact notebook and root document IDs first (`resolve_document` for paths), call `open_scope_read`, read **every** member document (the root document included) via `read_note` with `scopeSessionId`, then verify with `scope_read_status`.
+- Never claim a directory was fully read while any member is unread, failed, truncated, changed, or blocked, or while `scope_read_status` reports `scopeChanged` or `persistDegraded`. Tail-only reads, duplicate reads, and overlapping reads do not close coverage gaps.
+- Distinguish full-authorized-pool retrieval (search) from a completed full read of a chosen scope; the first finds material, the second is a verifiable completion claim.
+- Write results back into the existing structure under the active write policy; written notes join the knowledge base for later questions without any extra registration.
+
 ## Writes
 
 - Use `create_note`, `append_note`, or `update_note`.
@@ -36,7 +46,7 @@ The native SiYuan MCP server may expose other administrator-level tools. Their p
 
 ## Controlled knowledge compounding
 
-For source ingest, A/A-raw compilation, Wiki page selection, query promotion, knowledge lint, Error Book handling, or planning the compounding product, read [references/knowledge-compounding.md](references/knowledge-compounding.md) completely before acting.
+This is an **optional** workflow for tasks that explicitly ask for source ingest, A/A-raw compilation, Wiki page maintenance, query promotion, or knowledge linting. It is never a precondition for ordinary questions: those search all authorized notes directly. When such a task begins, read [references/knowledge-compounding.md](references/knowledge-compounding.md) completely before acting.
 
 The classification Skill remains authoritative for semantic placement, knowledge role, page type, and taxonomy. This Skill is authoritative for bounded discovery, safe execution, source preservation, write confirmation, state checks, readback, and plugin capability boundaries.
 
