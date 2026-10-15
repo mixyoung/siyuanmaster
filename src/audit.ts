@@ -6,7 +6,14 @@ import {
   isCurrentAuditEntry,
   normalizeAuditEntries,
 } from "./migration";
-import { PolicySyncBlockedError, PolicySyncTimeoutError, type PolicyTask } from "./policy-sync";
+import {
+  KERNEL_POLICY_TIMEOUT_MS,
+  PolicySyncBlockedError,
+  PolicySyncTimeoutError,
+  PolicyTaskQueue,
+  serializeStorageKey,
+  type PolicyTask,
+} from "./policy-sync";
 import { confirmStorageFileMissing } from "./storage-state";
 import type { AuditEntry, PluginPolicy } from "./types";
 
@@ -15,8 +22,11 @@ type AuditFileState = "present" | "missing" | "unknown";
  * Metadata-only audit store.
  *
  * Durability contract (best-effort, explicitly surfaced):
- * - Appends are serialized through a single promise chain so concurrent
- *   tool calls cannot read-modify-write over each other and drop entries.
+ * - Appends are serialized through this store's OWN single-writer lane so
+ *   concurrent tool calls cannot read-modify-write over each other and drop
+ *   entries. The lane is deliberately separate from the policy-storage
+ *   queue: a slow or hung policy write must never stall (or fail) audited
+ *   tool calls, and audit traffic must never queue ahead of a policy save.
  * - Read branches follow the storage contract (`get()` rejects when the
  *   file does not exist): a genuinely absent log is an empty log; a read
  *   failure on an existing file, or an existing-but-corrupt payload, never
@@ -26,18 +36,31 @@ type AuditFileState = "present" | "missing" | "unknown";
  *   `writeFailures` counter exposed through get_audit_log.
  */
 export class AuditStore {
-  private writeQueue: Promise<void> = Promise.resolve();
+  private readonly queue = new PolicyTaskQueue(KERNEL_POLICY_TIMEOUT_MS);
   private writeFailures = 0;
 
   constructor(
     private readonly api: kernel.ISiyuan,
     private readonly getPolicy: () => PluginPolicy,
-    private readonly serialize: (action: (task?: PolicyTask) => Promise<void>) => Promise<void> = action => action(),
   ) {}
 
   /** Entries whose persistence failed since plugin start (in-memory). */
   get writeFailureCount(): number {
     return this.writeFailures;
+  }
+
+  /**
+   * Runs one action against the audit file on this store's own lane plus the
+   * shared audit-key mutex. The migration's audit copy routes through here so
+   * every writer of audit.json serializes through a single queue without the
+   * policy lane ever waiting on audit traffic (or vice versa).
+   */
+  serializeFileWrite<T>(
+    action: (task?: PolicyTask) => Promise<T>,
+  ): Promise<T> {
+    return this.queue.run(task =>
+      serializeStorageKey(AUDIT_STORAGE_KEY, () => action(task)),
+    );
   }
 
   async record(
@@ -51,18 +74,27 @@ export class AuditStore {
     ) {
       return;
     }
-    // Serialize the whole read-modify-write; a rejected task must not break
-    // the chain for subsequent records.
     let counted = false;
     const failed = () => {
       if (!counted) this.writeFailures += 1;
       counted = true;
     };
-    const task = this.writeQueue.then(() => this.serialize(context => this.appendEntry(entry, failed, context)));
-    this.writeQueue = task.catch(() => undefined);
-    await task.catch(error => {
+    try {
+      // Lane serialization (this queue) plus the shared per-key mutex: the
+      // migration's audit copy runs on the policy lane and writes the same
+      // key, so both read-modify-write cycles must be atomic against each
+      // other without coupling the two lanes' queues.
+      await this.queue.run(task =>
+        serializeStorageKey(AUDIT_STORAGE_KEY, () =>
+          this.appendEntry(entry, failed, task),
+        ),
+      );
+    } catch (error) {
+      // Deadline/blocked outcomes end the wait without persisting the entry;
+      // appendEntry already counted storage failures internally. Either way
+      // the audited tool call must not fail because of the audit ledger.
       if (error instanceof PolicySyncTimeoutError || error instanceof PolicySyncBlockedError) failed();
-    });
+    }
   }
 
   async list(limit: number): Promise<AuditEntry[]> {

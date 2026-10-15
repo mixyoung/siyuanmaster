@@ -29,7 +29,7 @@ const LEGACY_NS = "plugin__siyuan_agent_access__";
 const TECHNICAL_ID = "siyuanmaster";
 const FQ = (name: string) => buildAgentCapabilityToolName(TECHNICAL_ID, name);
 
-const CATALOG_28 = {
+const CATALOG = {
   product: { technicalId: TECHNICAL_ID },
   namespaces: { plugin: PLUGIN_NS },
   pluginTools: [
@@ -40,6 +40,8 @@ const CATALOG_28 = {
     "read_note",
     "resolve_document",
     "read_note_segments",
+    "open_scope_read",
+    "scope_read_status",
     "register_knowledge_source",
     "register_wiki_authority",
     "knowledge_status",
@@ -64,7 +66,7 @@ const CATALOG_28 = {
   ].map((name) => ({ name, category: "x", readOnly: true, confirmDefault: false })),
 };
 
-const FQ_28 = CATALOG_28.pluginTools.map((t) => FQ(t.name));
+const FQ_ALL = CATALOG.pluginTools.map((t) => FQ(t.name));
 
 function mockHeaders(map: Record<string, string | null> = {}) {
   return {
@@ -352,74 +354,74 @@ describe("mcp-smoke catalog set validation", () => {
     expect(buildAgentCapabilityToolName("x".repeat(80), "y")).toHaveLength(64);
   });
 
-  it("matches exactly 28 plugin tools and zero legacy", () => {
+  it("matches exactly 30 plugin tools and zero legacy", () => {
     const discovered = [
-      ...FQ_28,
+      ...FQ_ALL,
       "some_native_tool",
     ];
-    const v = validateAgainstCatalog(discovered, CATALOG_28);
-    expect(v.expectedCount).toBe(28);
-    expect(v.actualCount).toBe(28);
+    const v = validateAgainstCatalog(discovered, CATALOG);
+    expect(v.expectedCount).toBe(30);
+    expect(v.actualCount).toBe(30);
     expect(v.missing).toEqual([]);
     expect(v.extra).toEqual([]);
     expect(v.legacyCount).toBe(0);
     expect(() => assertCatalogMatch(v)).not.toThrow();
   });
 
-  it("fails when catalog.pluginTools.length is not 28", () => {
+  it("fails when catalog.pluginTools.length is not 30", () => {
     const short = {
       product: { technicalId: TECHNICAL_ID },
       namespaces: { plugin: PLUGIN_NS },
-      pluginTools: CATALOG_28.pluginTools.slice(0, 27),
+      pluginTools: CATALOG.pluginTools.slice(0, 27),
     };
-    expect(() => validateAgainstCatalog(FQ_28.slice(0, 27), short)).toThrow(
-      /pluginTools\.length must be 28/,
+    expect(() => validateAgainstCatalog(FQ_ALL.slice(0, 27), short)).toThrow(
+      /pluginTools\.length must be 30/,
     );
     const long = {
       product: { technicalId: TECHNICAL_ID },
       namespaces: { plugin: PLUGIN_NS },
       pluginTools: [
-        ...CATALOG_28.pluginTools,
+        ...CATALOG.pluginTools,
         { name: "extra_tool", category: "x", readOnly: true, confirmDefault: false },
       ],
     };
     expect(() =>
-      validateAgainstCatalog([...FQ_28, FQ("extra_tool")], long),
-    ).toThrow(/pluginTools\.length must be 28/);
+      validateAgainstCatalog([...FQ_ALL, FQ("extra_tool")], long),
+    ).toThrow(/pluginTools\.length must be 30/);
   });
 
-  it("loads real catalog/capabilities.json with exactly 28 plugin tools", async () => {
+  it("loads real catalog/capabilities.json with exactly 30 plugin tools", async () => {
     const catalog = await loadCatalog(catalogPath);
-    expect(catalog.pluginTools).toHaveLength(28);
+    expect(catalog.pluginTools).toHaveLength(30);
     expect(catalog.namespaces.plugin).toBe(PLUGIN_NS);
     const discovered = catalog.pluginTools.map(
       (t: { name: string }) =>
         buildAgentCapabilityToolName(catalog.product.technicalId, t.name),
     );
-    expect(discovered).toHaveLength(28);
+    expect(discovered).toHaveLength(30);
     const v = validateAgainstCatalog(discovered, catalog);
-    expect(v.expectedCount).toBe(28);
-    expect(v.actualCount).toBe(28);
+    expect(v.expectedCount).toBe(30);
+    expect(v.actualCount).toBe(30);
     expect(() => assertCatalogMatch(v)).not.toThrow();
   });
 
   it("fails when a catalog tool is missing", () => {
-    const missingOne = FQ_28.slice(0, 27);
-    const v = validateAgainstCatalog(missingOne, CATALOG_28);
+    const missingOne = FQ_ALL.slice(0, 29);
+    const v = validateAgainstCatalog(missingOne, CATALOG);
     expect(v.missing).toHaveLength(1);
     expect(() => assertCatalogMatch(v)).toThrow(/missing/);
   });
 
   it("fails when an unexpected plugin tool is present", () => {
-    const withExtra = [...FQ_28, FQ("unexpected_tool")];
-    const v = validateAgainstCatalog(withExtra, CATALOG_28);
+    const withExtra = [...FQ_ALL, FQ("unexpected_tool")];
+    const v = validateAgainstCatalog(withExtra, CATALOG);
     expect(v.extra).toContain(FQ("unexpected_tool"));
     expect(() => assertCatalogMatch(v)).toThrow(/extra/);
   });
 
   it("fails closed when any legacy namespace tool appears", () => {
-    const withLegacy = [...FQ_28, `${LEGACY_NS}get_policy`];
-    const v = validateAgainstCatalog(withLegacy, CATALOG_28);
+    const withLegacy = [...FQ_ALL, `${LEGACY_NS}get_policy`];
+    const v = validateAgainstCatalog(withLegacy, CATALOG);
     expect(v.legacyCount).toBe(1);
     expect(() => assertCatalogMatch(v)).toThrow(/legacy/);
   });
@@ -907,7 +909,7 @@ describe("mcp-smoke orchestration", () => {
           jsonrpc: "2.0",
           id: body.id,
           result: {
-            tools: FQ_28.map((name) => ({ name })),
+            tools: FQ_ALL.map((name) => ({ name })),
           },
         });
       }
@@ -979,7 +981,7 @@ describe("mcp-smoke orchestration", () => {
       runMcpSmoke({
         token,
         url,
-        catalog: CATALOG_28,
+        catalog: CATALOG,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
       }),
@@ -992,7 +994,7 @@ describe("mcp-smoke orchestration", () => {
       await runMcpSmoke({
         token,
         url,
-        catalog: CATALOG_28,
+        catalog: CATALOG,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
       });
@@ -1011,7 +1013,7 @@ describe("mcp-smoke orchestration", () => {
       await runMcpSmoke({
         token,
         url,
-        catalog: CATALOG_28,
+        catalog: CATALOG,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
       });
@@ -1040,7 +1042,7 @@ describe("mcp-smoke orchestration", () => {
     await runMcpSmoke({
       token,
       url,
-      catalog: CATALOG_28,
+      catalog: CATALOG,
       fetchImpl: fetchImpl as typeof fetch,
       log: (line) => logs.push(line),
     });
@@ -1065,7 +1067,7 @@ describe("mcp-smoke orchestration", () => {
       await runMcpSmoke({
         token,
         url,
-        catalog: CATALOG_28,
+        catalog: CATALOG,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
       });
@@ -1084,7 +1086,7 @@ describe("mcp-smoke orchestration", () => {
       runMcpSmoke({
         token,
         url,
-        catalog: CATALOG_28,
+        catalog: CATALOG,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
       }),
@@ -1097,7 +1099,7 @@ describe("mcp-smoke orchestration", () => {
       runMcpSmoke({
         token,
         url,
-        catalog: CATALOG_28,
+        catalog: CATALOG,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
       }),
@@ -1110,7 +1112,7 @@ describe("mcp-smoke orchestration", () => {
       await runMcpSmoke({
         token,
         url,
-        catalog: CATALOG_28,
+        catalog: CATALOG,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
       });
@@ -1131,7 +1133,7 @@ describe("mcp-smoke orchestration", () => {
       runMcpSmoke({
         token,
         url,
-        catalog: CATALOG_28,
+        catalog: CATALOG,
         readSmoke: true,
         fetchImpl: fetchImpl as typeof fetch,
         log: silent,
@@ -1152,7 +1154,7 @@ describe("mcp-smoke orchestration", () => {
     const summary = await runMcpSmoke({
       token,
       url,
-      catalog: CATALOG_28,
+      catalog: CATALOG,
       readSmoke: true,
       fetchImpl: fetchImpl as typeof fetch,
       log: (line) => logs.push(line),
@@ -1206,7 +1208,7 @@ describe("mcp-smoke orchestration", () => {
     const summary = await runMcpSmoke({
       token,
       url,
-      catalog: CATALOG_28,
+      catalog: CATALOG,
       readSmoke: true,
       fetchImpl: fetchImpl as typeof fetch,
       log: (line) => logs.push(line),
@@ -1241,7 +1243,7 @@ describe("mcp-smoke orchestration", () => {
 
     const joined = [...logs, JSON.stringify(summary)].join("\n");
     expect(joined).toMatch(/mcp-smoke PASS/);
-    expect(joined).toMatch(/catalog match ok expected=28/);
+    expect(joined).toMatch(/catalog match ok expected=30/);
     expect(joined).not.toContain(token);
     expect(joined).not.toContain(SESSION);
     expect(joined).not.toContain("POLICY_SECRET_VALUE");
@@ -1249,6 +1251,6 @@ describe("mcp-smoke orchestration", () => {
     expect(joined).not.toContain("Private Notebook");
     expect(summary.session).toBe(true);
     expect(summary.ok).toBe(true);
-    expect(summary.catalog).toEqual({ expected: 28, actual: 28, legacy: 0 });
+    expect(summary.catalog).toEqual({ expected: 30, actual: 30, legacy: 0 });
   });
 });

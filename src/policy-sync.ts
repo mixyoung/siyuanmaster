@@ -82,3 +82,30 @@ export class PolicyTaskQueue {
     });
   }
 }
+
+const storageKeyLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Per-storage-key write mutex shared across lanes. Independent lanes
+ * (policy, audit, coverage) keep their own queues so a slow or hung lane
+ * never blocks another — except where two lanes legitimately write the SAME
+ * key (the migration's audit copy vs. audit appends), where this lock makes
+ * their read-modify-write cycles atomic against each other. A waiter that
+ * times out still ends its own wait; the hung action holds only this key's
+ * lock, never another lane's queue.
+ */
+export function serializeStorageKey<T>(
+  key: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const tail = storageKeyLocks.get(key) ?? Promise.resolve();
+  const run = tail.then(action);
+  storageKeyLocks.set(
+    key,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+}

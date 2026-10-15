@@ -58,6 +58,18 @@
       "confirmDefault": false
     },
     {
+      "name": "open_scope_read",
+      "category": "read",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
+      "name": "scope_read_status",
+      "category": "read",
+      "readOnly": true,
+      "confirmDefault": false
+    },
+    {
       "name": "register_knowledge_source",
       "category": "knowledge",
       "readOnly": false,
