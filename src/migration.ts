@@ -7,7 +7,7 @@
 //
 // - New policy always wins; never overwrite with legacy.
 // - Legacy is read-only; never delete/move/write the old directory.
-// - Corrupt/missing legacy → fail closed to safe default empty allowlist.
+// - Only confirmed missing storage permits a healthy initial default.
 // - New audit non-empty → no audit copy; empty → bounded metadata-only copy.
 // - Migration marker makes repeated startups idempotent.
 //
@@ -175,11 +175,32 @@ export function resolvePolicyAfterUpgrade(
 }
 
 export function isPlausiblePolicy(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const access = (value as Record<string, unknown>).access;
+  if (!access || typeof access !== "object" || Array.isArray(access)) return false;
+  const record = access as Record<string, unknown>;
   return (
-    Boolean(value) &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    "access" in (value as Record<string, unknown>)
+    (record.mode === "allowlist" || record.mode === "denylist") &&
+    (record.defaultDecision === "allow" || record.defaultDecision === "deny") &&
+    Array.isArray(record.selectedNotebookIds) &&
+    record.selectedNotebookIds.every(id => typeof id === "string" && id.trim().length > 0)
+  );
+}
+
+const AUDIT_OUTCOMES = new Set<AuditEntry["outcome"]>([
+  "allowed", "denied", "confirmation_required", "failed",
+]);
+
+export function isCurrentAuditEntry(value: unknown): value is AuditEntry {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.timestamp === "string" &&
+    Number.isFinite(Date.parse(entry.timestamp)) &&
+    typeof entry.operation === "string" &&
+    entry.operation.trim().length > 0 &&
+    typeof entry.outcome === "string" &&
+    AUDIT_OUTCOMES.has(entry.outcome as AuditEntry["outcome"])
   );
 }
 
@@ -205,13 +226,7 @@ export function normalizeAuditEntries(
   if (!Array.isArray(value)) {
     return [];
   }
-  const legacy = value.filter(
-    (entry): entry is AuditEntry =>
-      Boolean(entry) &&
-      typeof entry === "object" &&
-      typeof (entry as AuditEntry).timestamp === "string" &&
-      typeof (entry as AuditEntry).operation === "string",
-  );
+  const legacy = value.filter(isCurrentAuditEntry);
   // Drop accidental body/content fields if any slipped into storage.
   const cleaned = legacy.map((entry) => sanitizeAuditEntry(entry));
   return [...cleaned]
@@ -263,6 +278,7 @@ export interface MigrationMarker {
   policySource: "new" | "old" | "default";
   policyCopied: boolean;
   auditCopied: boolean;
+  policyInitialized?: true;
 }
 
 export function isMigrationMarker(value: unknown): value is MigrationMarker {
@@ -279,7 +295,8 @@ export function isMigrationMarker(value: unknown): value is MigrationMarker {
       record.policySource === "old" ||
       record.policySource === "default") &&
     typeof record.policyCopied === "boolean" &&
-    typeof record.auditCopied === "boolean"
+    typeof record.auditCopied === "boolean" &&
+    (record.policyInitialized === undefined || record.policyInitialized === true)
   );
 }
 
@@ -289,6 +306,8 @@ export function isMigrationMarker(value: unknown): value is MigrationMarker {
  * - map legacy keys via /api/file/getFile using official paths
  *   `/data/storage/petal/siyuan-agent-access/<key>` (read-only)
  * - never delete or write legacy paths
+ * - return undefined only for confirmed absence; reject unreadable/corrupt data
+ * - serialize migration and ordinary saves through the kernel policy writer
  */
 export interface MigrationStorageIO {
   readCurrent(key: string): Promise<unknown | undefined>;
@@ -327,15 +346,41 @@ export async function runStorageMigration(
   const now = io.now ?? (() => new Date());
 
   const existingMarkerRaw = await io.readCurrent(MIGRATION_MARKER_KEY);
+  if (existingMarkerRaw !== undefined && !isMigrationMarker(existingMarkerRaw)) {
+    throw new Error("Migration marker is invalid; refusing to repeat migration");
+  }
+  const newPolicyRaw = await io.readCurrent(POLICY_STORAGE_KEY);
+  if (newPolicyRaw !== undefined && !isPlausiblePolicy(newPolicyRaw)) {
+    throw new Error("Current policy is invalid; refusing to overwrite");
+  }
   if (isMigrationMarker(existingMarkerRaw)) {
-    const newPolicyRaw = await io.readCurrent(POLICY_STORAGE_KEY);
+    if (newPolicyRaw === undefined &&
+      (existingMarkerRaw.policySource !== "default" || existingMarkerRaw.policyInitialized)) {
+      throw new Error("Previously migrated policy is missing");
+    }
     const decision = resolvePolicyAfterUpgrade(newPolicyRaw, undefined);
+    // Older default-only markers had no policy file; establish it once before sealing initialization.
+    if (newPolicyRaw === undefined) {
+      await io.writeCurrent(POLICY_STORAGE_KEY, decision.policy);
+      writtenKeys.push(POLICY_STORAGE_KEY);
+    }
+    if (!existingMarkerRaw.policyInitialized) {
+      // Sealing the marker is migration bookkeeping. A store that forbids
+      // writes must still serve an already-valid policy; the seal retries
+      // on the next load that can write.
+      try {
+        await io.writeCurrent(MIGRATION_MARKER_KEY, { ...existingMarkerRaw, policyInitialized: true });
+        writtenKeys.push(MIGRATION_MARKER_KEY);
+      } catch {
+        // Marker stays unsealed; the healthy policy load continues.
+      }
+    }
     return {
       policy: decision.policy,
       policySource: decision.source === "old" ? "default" : decision.source,
       policyCopied: false,
       auditCopied: false,
-      markerWritten: false,
+      markerWritten: writtenKeys.includes(MIGRATION_MARKER_KEY),
       alreadyMigrated: true,
       writtenKeys,
       legacyReads,
@@ -343,33 +388,40 @@ export async function runStorageMigration(
     };
   }
 
-  const newPolicyRaw = await io.readCurrent(POLICY_STORAGE_KEY);
+  const newAuditRaw = await io.readCurrent(AUDIT_STORAGE_KEY);
+  if (newAuditRaw !== undefined &&
+    (!Array.isArray(newAuditRaw) || !newAuditRaw.every(isCurrentAuditEntry))) {
+    throw new Error("Current audit is invalid; refusing to overwrite");
+  }
   let oldPolicyRaw: unknown;
-  if (!isPlausiblePolicy(newPolicyRaw)) {
+  if (newPolicyRaw === undefined) {
     legacyReads.push(legacyPetalFilePath(POLICY_STORAGE_KEY));
-    oldPolicyRaw = await safeReadLegacy(io, POLICY_STORAGE_KEY);
+    oldPolicyRaw = await io.readLegacy(POLICY_STORAGE_KEY);
+    if (oldPolicyRaw !== undefined && !isPlausiblePolicy(oldPolicyRaw)) {
+      throw new Error("Legacy policy is invalid; migration is incomplete");
+    }
   }
   const decision = resolvePolicyAfterUpgrade(newPolicyRaw, oldPolicyRaw);
-
-  let policyCopied = false;
-  if (decision.migrateOld) {
-    await io.writeCurrent(POLICY_STORAGE_KEY, decision.policy);
-    writtenKeys.push(POLICY_STORAGE_KEY);
-    policyCopied = true;
+  let migratedAudit: AuditEntry[] = [];
+  if (newAuditRaw === undefined || (newAuditRaw as AuditEntry[]).length === 0) {
+    legacyReads.push(legacyPetalFilePath(AUDIT_STORAGE_KEY));
+    const oldAuditRaw = await io.readLegacy(AUDIT_STORAGE_KEY);
+    if (oldAuditRaw !== undefined && !Array.isArray(oldAuditRaw)) {
+      throw new Error("Legacy audit is invalid; migration is incomplete");
+    }
+    migratedAudit = migrateLegacyAuditEntries([], oldAuditRaw);
   }
 
-  let auditCopied = false;
-  const newAuditRaw = await io.readCurrent(AUDIT_STORAGE_KEY);
-  const newAuditEntries = normalizeAuditEntries(newAuditRaw);
-  if (newAuditEntries.length === 0) {
-    legacyReads.push(legacyPetalFilePath(AUDIT_STORAGE_KEY));
-    const oldAuditRaw = await safeReadLegacy(io, AUDIT_STORAGE_KEY);
-    const merged = migrateLegacyAuditEntries([], oldAuditRaw);
-    if (merged.length > 0) {
-      await io.writeCurrent(AUDIT_STORAGE_KEY, merged);
-      writtenKeys.push(AUDIT_STORAGE_KEY);
-      auditCopied = true;
-    }
+  let policyCopied = false;
+  if (newPolicyRaw === undefined) {
+    await io.writeCurrent(POLICY_STORAGE_KEY, decision.policy);
+    writtenKeys.push(POLICY_STORAGE_KEY);
+    policyCopied = decision.migrateOld;
+  }
+  const auditCopied = migratedAudit.length > 0;
+  if (auditCopied) {
+    await io.writeCurrent(AUDIT_STORAGE_KEY, migratedAudit);
+    writtenKeys.push(AUDIT_STORAGE_KEY);
   }
 
   const marker: MigrationMarker = {
@@ -380,6 +432,7 @@ export async function runStorageMigration(
     policySource: decision.source,
     policyCopied,
     auditCopied,
+    policyInitialized: true,
   };
   await io.writeCurrent(MIGRATION_MARKER_KEY, marker);
   writtenKeys.push(MIGRATION_MARKER_KEY);
@@ -395,18 +448,6 @@ export async function runStorageMigration(
     legacyReads,
     reason: decision.reason,
   };
-}
-
-async function safeReadLegacy(
-  io: MigrationStorageIO,
-  key: string,
-): Promise<unknown | undefined> {
-  try {
-    return await io.readLegacy(key);
-  } catch {
-    // Fail closed: treat unreadable legacy as missing.
-    return undefined;
-  }
 }
 
 /**

@@ -14,7 +14,7 @@ const AUDIT_FILE = {
 /**
  * Contract-shaped storage mock (per siyuan/kernel.d.ts):
  * - `get()` rejects while the file does not exist;
- * - `list(".")` reports file existence;
+ * - readDir confirms file existence without silently omitting stat failures;
  * - `put()` persists the payload (optionally failing).
  */
 function mockApi(options: {
@@ -29,6 +29,7 @@ function mockApi(options: {
     put: ReturnType<typeof vi.fn>;
   };
   warn: ReturnType<typeof vi.fn>;
+  probe: ReturnType<typeof vi.fn>;
 } {
   let payload: string | undefined;
   const get = vi.fn(async () => {
@@ -49,11 +50,16 @@ function mockApi(options: {
       }),
   );
   const warn = vi.fn(async () => undefined);
+  const probe = vi.fn(async () => ({
+    status: 200,
+    text: async () => JSON.stringify({ code: 0, data: payload === undefined ? [] : [AUDIT_FILE] }),
+  }));
   const api = {
     storage: { get, list, put },
+    client: { fetch: probe },
     logger: { warn },
   } as unknown as kernel.ISiyuan;
-  return { api, setPayload: (v) => (payload = v), getPayload: () => payload, storage: { get, list, put }, warn };
+  return { api, setPayload: (v) => (payload = v), getPayload: () => payload, storage: { get, list, put }, warn, probe };
 }
 
 function auditEnabledPolicy(): PluginPolicy {
@@ -117,13 +123,13 @@ describe("AuditStore durability contract", () => {
   });
 
   it("does not overwrite history when both the read and existence probe fail", async () => {
-    const { api, storage, setPayload, getPayload, warn } = mockApi();
+    const { api, storage, setPayload, getPayload, warn, probe } = mockApi();
     const onDisk = JSON.stringify([
       { ...entry("seed"), timestamp: new Date().toISOString() },
     ]);
     setPayload(onDisk);
     storage.get.mockRejectedValue(new Error("storage read unavailable"));
-    storage.list.mockRejectedValue(new Error("directory probe unavailable"));
+    probe.mockRejectedValue(new Error("directory probe unavailable"));
     const store = new AuditStore(api, auditEnabledPolicy);
 
     await store.record(entry("create"));
@@ -132,6 +138,21 @@ describe("AuditStore durability contract", () => {
     expect(getPayload()).toBe(onDisk);
     expect(store.writeFailureCount).toBe(1);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["present", "unknown"])("does not trust an incomplete storage.list when readDir is %s", async state => {
+    const { api, storage, setPayload, getPayload, probe } = mockApi();
+    const onDisk = JSON.stringify([{ ...entry("seed"), timestamp: new Date().toISOString() }]);
+    setPayload(onDisk);
+    storage.get.mockRejectedValue(new Error("read failed"));
+    storage.list.mockResolvedValue([]);
+    if (state === "unknown") probe.mockResolvedValue({ status: 200, text: async () => JSON.stringify({ code: 500 }) });
+    const store = new AuditStore(api, auditEnabledPolicy);
+    await store.record(entry("create"));
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(storage.list).not.toHaveBeenCalled();
+    expect(getPayload()).toBe(onDisk);
+    expect(store.writeFailureCount).toBe(1);
   });
 
   it.each([

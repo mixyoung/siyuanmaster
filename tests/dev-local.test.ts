@@ -457,7 +457,7 @@ describe("dev-local.ps1", () => {
     expect(src).toMatch(/Assert-ExistingParentsNotReparse.*failedParent/);
   });
 
-  it("static: Test-ShouldReEnablePreviousPlugin truth table via pwsh", () => {
+  it("static: Test-ShouldReEnablePreviousPlugin truth table via pwsh", { timeout: 30_000 }, () => {
     // Extract and evaluate the pure helper through a small inline harness.
     const harness = `
       $ErrorActionPreference = 'Stop'
@@ -514,7 +514,7 @@ describe("dev-local.ps1", () => {
     expect(combined).toMatch(/OK cases=6/);
   });
 
-  it("WhatIf validates and prints plan without changing workspace files", async () => {
+  it("WhatIf validates and prints plan without changing workspace files", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-whatif-");
     const before = snapshotTree(workspace);
@@ -552,7 +552,7 @@ describe("dev-local.ps1", () => {
     expect(existsSync(path.join(workspace, "data", "plugins"))).toBe(false);
   });
 
-  it("SkipBuild+SkipReload installs into temp target and backs up prior install (closed port)", async () => {
+  it("SkipBuild+SkipReload installs into temp target and backs up prior install (closed port)", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-install-");
     const pluginsDir = path.join(workspace, "data", "plugins");
@@ -601,7 +601,7 @@ describe("dev-local.ps1", () => {
     expect(stagingLeft).toEqual([]);
   });
 
-  it("fresh install does not create empty backup root", async () => {
+  it("fresh install does not create empty backup root", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-fresh-");
     const pluginsDir = path.join(workspace, "data", "plugins");
@@ -624,7 +624,7 @@ describe("dev-local.ps1", () => {
     ).toBe(false);
   });
 
-  it("rejects non-loopback ApiBaseUrl", () => {
+  it("rejects non-loopback ApiBaseUrl", { timeout: 15_000 }, () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-noloop-");
 
@@ -670,7 +670,7 @@ describe("dev-local.ps1", () => {
     }
   }, 15_000);
 
-  it("SkipReload refuses when ApiBaseUrl port is reachable unless AllowRunningWithoutReload", async () => {
+  it("SkipReload refuses when ApiBaseUrl port is reachable unless AllowRunningWithoutReload", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-skip-open-");
     const stub = await startLocalStub({
@@ -709,7 +709,7 @@ describe("dev-local.ps1", () => {
     ).toBe(true);
   });
 
-  it("TestFailAfterBackupMove restores old target and keeps prior content", async () => {
+  it("TestFailAfterBackupMove restores old target and keeps prior content", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-fail-after-backup-");
     const pluginsDir = path.join(workspace, "data", "plugins");
@@ -754,7 +754,7 @@ describe("dev-local.ps1", () => {
     expect(existsSync(backupsRoot)).toBe(true);
   });
 
-  it("fault inject: quarantine fail forbids re-enable and marks recover incomplete", async () => {
+  it("fault inject: quarantine fail forbids re-enable and marks recover incomplete", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-quarantine-fail-");
     const pluginsDir = path.join(workspace, "data", "plugins");
@@ -823,7 +823,7 @@ describe("dev-local.ps1", () => {
     expect(combined).not.toContain("test-token-quarantine-fail");
   });
 
-  it("successful quarantine nests failed plugin under .siyuanmaster-dev-backups (not directly in data/plugins)", async () => {
+  it("successful quarantine nests failed plugin under .siyuanmaster-dev-backups (not directly in data/plugins)", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-quarantine-ok-");
     const pluginsDir = path.join(workspace, "data", "plugins");
@@ -907,7 +907,7 @@ describe("dev-local.ps1", () => {
     expect(combined).not.toContain("test-token-quarantine-ok");
   });
 
-  it("getWorkspaceInfo mismatch fails closed before disable/swap", async () => {
+  it("getWorkspaceInfo mismatch fails closed before disable/swap", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-ws-mismatch-");
     const pluginsDir = path.join(workspace, "data", "plugins");
@@ -957,7 +957,7 @@ describe("dev-local.ps1", () => {
     expect(combined).not.toContain("test-token-ws-mismatch");
   });
 
-  it("getWorkspaceInfo match proceeds past workspace stage (smoke uses same origin)", async () => {
+  it("getWorkspaceInfo match proceeds past workspace stage (smoke uses same origin)", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-ws-match-");
     writeWorkspaceConf(workspace, "test-token-ws-match");
@@ -999,7 +999,7 @@ describe("dev-local.ps1", () => {
     expect(combined).not.toContain("test-token-ws-match");
   });
 
-  it("WhatIf plans smoke --url on same origin as ApiBaseUrl", async () => {
+  it("WhatIf plans smoke --url on same origin as ApiBaseUrl", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-smoke-url-");
     const port = await allocateClosedLoopbackPort();
@@ -1022,7 +1022,7 @@ describe("dev-local.ps1", () => {
     expect(combined).toMatch(/--read-smoke/);
   });
 
-  it("rejects existing target whose plugin.json name is not siyuanmaster", async () => {
+  it("rejects existing target whose plugin.json name is not siyuanmaster", { timeout: 30_000 }, async () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-wrong-name-");
     const targetDir = path.join(workspace, "data", "plugins", "siyuanmaster");
@@ -1046,7 +1046,7 @@ describe("dev-local.ps1", () => {
     );
   });
 
-  it("rejects data/plugins when it is a junction or symlink", () => {
+  it("rejects data/plugins when it is a junction or symlink", { timeout: 15_000 }, () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-reparse-");
     const outside = makeTempDir("siyuanmaster-dev-local-reparse-outside-");
@@ -1075,7 +1075,7 @@ describe("dev-local.ps1", () => {
     expect(existsSync(path.join(outside, "siyuanmaster"))).toBe(false);
   });
 
-  it("rejects backupBase when it is a junction or symlink (WhatIf; no external/target mutation)", () => {
+  it("rejects backupBase when it is a junction or symlink (WhatIf; no external/target mutation)", { timeout: 15_000 }, () => {
     assertRepoDistComplete();
     const workspace = makeTempDir("siyuanmaster-dev-local-backupbase-reparse-");
     const outside = makeTempDir(

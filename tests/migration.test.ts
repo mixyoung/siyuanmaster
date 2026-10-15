@@ -238,11 +238,8 @@ describe("technical-ID migration (phase 2 storage)", () => {
     });
     // also reject non-plausible
     expect(isPlausiblePolicy("not-json-object")).toBe(false);
-    const result = await runStorageMigration(store.io);
-    expect(result.policySource).toBe("default");
-    expect(result.policyCopied).toBe(false);
-    expect(result.policy.access.selectedNotebookIds).toEqual([]);
-    expect(result.policy.access.defaultDecision).toBe("deny");
+    await expect(runStorageMigration(store.io)).rejects.toThrow("Legacy policy is invalid");
+    expect(store.current).toEqual({});
     expect(store.legacy[POLICY_STORAGE_KEY]).toBe("not-json-object");
   });
 
@@ -259,9 +256,8 @@ describe("technical-ID migration (phase 2 storage)", () => {
         },
       },
     });
-    const result = await runStorageMigration(store.io);
-    expect(result.policySource).toBe("default");
-    expect(result.policy.access.selectedNotebookIds).toEqual([]);
+    await expect(runStorageMigration(store.io)).rejects.toThrow("legacy read failed");
+    expect(store.current).toEqual({});
   });
 
   it("copies old audit only when new audit is empty (bounded metadata-only)", async () => {
@@ -365,6 +361,106 @@ describe("technical-ID migration (phase 2 storage)", () => {
     expect(store.current[POLICY_STORAGE_KEY]).toEqual(
       snapshotCurrent[POLICY_STORAGE_KEY],
     );
+  });
+
+  it.each([MIGRATION_MARKER_KEY, POLICY_STORAGE_KEY, AUDIT_STORAGE_KEY])(
+    "does not write anything when current %s cannot be read", async failedKey => {
+      const store = memoryIO({ legacy: {
+        [POLICY_STORAGE_KEY]: { access: { mode: "allowlist", selectedNotebookIds: ["old"], defaultDecision: "deny" } },
+      } });
+      const read = store.io.readCurrent;
+      store.io.readCurrent = async key => {
+        if (key === failedKey) throw new Error("current read unavailable");
+        return read(key);
+      };
+      await expect(runStorageMigration(store.io)).rejects.toThrow("current read unavailable");
+      expect(store.current).toEqual({});
+    },
+  );
+
+  it.each([
+    [MIGRATION_MARKER_KEY, {}],
+    [POLICY_STORAGE_KEY, { access: null }],
+    [AUDIT_STORAGE_KEY, {}],
+    [AUDIT_STORAGE_KEY, [{ timestamp: "invalid", operation: "read", outcome: "allowed" }]],
+  ])("preserves invalid current data at %s", async (key, value) => {
+    const store = memoryIO({ current: { [key as string]: value }, legacy: {
+      [POLICY_STORAGE_KEY]: { access: { mode: "allowlist", selectedNotebookIds: ["old"], defaultDecision: "deny" } },
+      [AUDIT_STORAGE_KEY]: [{ timestamp: "2026-01-01T00:00:00.000Z", operation: "read", outcome: "allowed" }],
+    } });
+    const before = JSON.stringify(store.current);
+    await expect(runStorageMigration(store.io)).rejects.toThrow(/invalid/);
+    expect(JSON.stringify(store.current)).toBe(before);
+  });
+
+  it("does not copy policy before a required legacy audit read succeeds", async () => {
+    const store = memoryIO({ failLegacyKeys: [AUDIT_STORAGE_KEY], legacy: {
+      [POLICY_STORAGE_KEY]: { access: { mode: "allowlist", selectedNotebookIds: ["old"], defaultDecision: "deny" } },
+    } });
+    await expect(runStorageMigration(store.io)).rejects.toThrow("legacy read failed");
+    expect(store.current).toEqual({});
+  });
+
+  it("keeps marker-only initial defaults healthy on later startups", async () => {
+    const store = memoryIO();
+    const first = await runStorageMigration(store.io);
+    expect(first.policySource).toBe("default");
+    expect(store.current[POLICY_STORAGE_KEY]).toBeDefined();
+    delete store.current[POLICY_STORAGE_KEY];
+    delete (store.current[MIGRATION_MARKER_KEY] as Record<string, unknown>).policyInitialized;
+    const again = await runStorageMigration(store.io);
+    expect(again.alreadyMigrated).toBe(true);
+    expect(again.policySource).toBe("default");
+    expect(store.current[POLICY_STORAGE_KEY]).toBeDefined();
+    expect(store.current[MIGRATION_MARKER_KEY]).toMatchObject({ policyInitialized: true });
+  });
+
+  it("does not re-import old policy if the migrated current policy disappears", async () => {
+    const store = memoryIO({ legacy: {
+      [POLICY_STORAGE_KEY]: { access: { mode: "allowlist", selectedNotebookIds: ["old"], defaultDecision: "deny" } },
+    } });
+    await runStorageMigration(store.io);
+    delete store.current[POLICY_STORAGE_KEY];
+    const marker = store.current[MIGRATION_MARKER_KEY];
+    await expect(runStorageMigration(store.io)).rejects.toThrow("Previously migrated policy is missing");
+    expect(store.current[POLICY_STORAGE_KEY]).toBeUndefined();
+    expect(store.current[MIGRATION_MARKER_KEY]).toBe(marker);
+  });
+
+  it("only migrates legacy audit entries satisfying the current audit schema", () => {
+    const valid = { timestamp: "2026-01-01T00:00:00.000Z", operation: "read", outcome: "allowed" };
+    expect(migrateLegacyAuditEntries([], [valid, { ...valid, outcome: "unknown" }, { ...valid, timestamp: "bad" }]))
+      .toEqual([valid]);
+  });
+
+  it("loads a valid policy without sealing when the store is read-only", async () => {
+    const oldMarker = {
+      schemaVersion: 1, from: "siyuan-agent-access", to: "siyuanmaster",
+      completedAt: "2026-01-01T00:00:00.000Z", policySource: "new", policyCopied: true, auditCopied: false,
+    };
+    const policy = { access: { mode: "allowlist", selectedNotebookIds: ["20260101000000-nb1"], defaultDecision: "deny" } };
+    const store = memoryIO({ current: { [MIGRATION_MARKER_KEY]: oldMarker, [POLICY_STORAGE_KEY]: policy } });
+    store.io.writeCurrent = async () => { throw new Error("read-only"); };
+    const result = await runStorageMigration(store.io);
+    expect(result.alreadyMigrated).toBe(true);
+    expect(result.policySource).toBe("new");
+    expect(result.policy.access.selectedNotebookIds).toEqual(["20260101000000-nb1"]);
+    expect(result.writtenKeys).toEqual([]);
+    expect(store.current[MIGRATION_MARKER_KEY]).toEqual(oldMarker);
+    expect(store.current[POLICY_STORAGE_KEY]).toEqual(policy);
+  });
+
+  it("seals an unsealed marker when writes succeed and keeps the policy untouched", async () => {
+    const oldMarker = {
+      schemaVersion: 1, from: "siyuan-agent-access", to: "siyuanmaster",
+      completedAt: "2026-01-01T00:00:00.000Z", policySource: "new", policyCopied: true, auditCopied: false,
+    };
+    const policy = { access: { mode: "allowlist", selectedNotebookIds: ["20260101000000-nb1"], defaultDecision: "deny" } };
+    const store = memoryIO({ current: { [MIGRATION_MARKER_KEY]: oldMarker, [POLICY_STORAGE_KEY]: policy } });
+    const result = await runStorageMigration(store.io);
+    expect(result.writtenKeys).toEqual([MIGRATION_MARKER_KEY]);
+    expect(store.current[MIGRATION_MARKER_KEY]).toMatchObject({ policyInitialized: true, policySource: "new" });
+    expect(store.current[POLICY_STORAGE_KEY]).toEqual(policy);
   });
 
   it("reads legacy once-tag attr and writes only the new attr name", () => {
