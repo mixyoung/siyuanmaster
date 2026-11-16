@@ -178,6 +178,25 @@ export class KernelApiClient {
     return data.notebooks ?? [];
   }
 
+  async renameNotebook(notebookId: string, name: string): Promise<void> {
+    await this.post<unknown>("/api/notebook/renameNotebook", {
+      notebook: assertSiyuanId(notebookId, "notebookId"), name,
+    });
+  }
+
+  async createNotebook(name: string): Promise<NotebookSummary> {
+    const result = await this.post<{ notebook: NotebookSummary }>("/api/notebook/createNotebook", { name });
+    if (!result?.notebook) throw new Error("Notebook creation response is missing its identity");
+    return result.notebook;
+  }
+
+  async setNotebookSort(notebookId: string, sort: number): Promise<void> {
+    await this.post<unknown>("/api/filetree/setSort", {
+      notebookSorts: [{ id: assertSiyuanId(notebookId, "notebookId"), sort }],
+      docSorts: [],
+    });
+  }
+
   async getBlock(id: string): Promise<BlockRecord> {
     const safeId = assertSiyuanId(id, "id");
     const rows = await this.sql<BlockRecord>(

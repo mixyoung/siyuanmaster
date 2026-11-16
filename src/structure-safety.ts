@@ -33,7 +33,28 @@ export interface MovePreview {
   subtreeDocumentCount: number;
 }
 
-export type StructurePreview = RenamePreview | MovePreview;
+export interface NotebookManagementPreview {
+  kind: "notebook_rename" | "notebook_sort";
+  token: string;
+  expiresAt: number;
+  notebookId: string;
+  name: string;
+  sort: number | undefined;
+  closed: boolean;
+  encrypted: boolean;
+  newName?: string;
+  newSort?: number;
+}
+
+export interface NotebookCreatePreview {
+  kind: "notebook_create";
+  token: string;
+  expiresAt: number;
+  newName: string;
+  policyFingerprint: string;
+}
+
+export type StructurePreview = RenamePreview | MovePreview | NotebookManagementPreview | NotebookCreatePreview;
 
 export function snapshotDocument(
   document: BlockRecord,

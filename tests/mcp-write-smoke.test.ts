@@ -47,6 +47,9 @@ const CATALOG = {
   pluginTools: [
     "get_policy",
     "list_accessible_notebooks",
+    "create_notebook",
+    "rename_notebook",
+    "set_notebook_sort",
     "list_document_tree",
     "search_notes",
     "read_note",

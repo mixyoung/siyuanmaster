@@ -28,7 +28,122 @@ interface KernelRuntime {
   registerUpdateTool(): Promise<void>;
   registerRenameTool(): Promise<void>;
   registerMoveTool(): Promise<void>;
+  registerNotebookManagementTools(): Promise<void>;
+  registerCreateNotebookTool(): Promise<void>;
 }
+
+describe("controlled notebook management", () => {
+  it("only creates in denylist mode after exact confirmation and verifies the ID", async () => {
+    const setup = await fixture();
+    let created = false;
+    const newId = "20260101000004-newnb01";
+    setup.client.listNotebooks = vi.fn(async () => created
+      ? [{ id: NOTEBOOK_ID, name: "Existing" }, { id: newId, name: "New" }]
+      : [{ id: NOTEBOOK_ID, name: "Existing" }]);
+    setup.client.createNotebook = vi.fn(async () => {
+      created = true;
+      return { id: newId, name: "New" };
+    });
+    await setup.plugin.registerCreateNotebookTool();
+    const fn = setup.handler("create_notebook");
+    expect((await fn({ name: "New" })).error?.code).toBe("operation_denied");
+    setup.plugin.policy.access.mode = "denylist";
+    setup.plugin.policy.access.selectedNotebookIds = [];
+    setup.plugin.policy.operations.create = "allow";
+    const preview = await fn({ name: "New" });
+    expect(preview.result?.requiresUserConfirmation).toBe(true);
+    expect((await fn({ name: "New", previewToken: preview.result?.previewToken })).error?.code).toBe("confirmation_required");
+    expect((await fn({ name: "New", previewToken: preview.result?.previewToken, confirmed: true })).result)
+      .toMatchObject({ mode: "executed", notebookId: newId, verified: true });
+    expect(setup.client.createNotebook).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops creation when the policy changes after preview", async () => {
+    const setup = await fixture();
+    setup.plugin.policy.access.mode = "denylist";
+    setup.plugin.policy.access.selectedNotebookIds = [];
+    setup.plugin.policy.operations.create = "allow";
+    setup.client.createNotebook = vi.fn();
+    await setup.plugin.registerCreateNotebookTool();
+    const fn = setup.handler("create_notebook");
+    const preview = await fn({ name: "New" });
+    setup.plugin.policy.operations.update = "deny";
+    expect((await fn({ name: "New", previewToken: preview.result?.previewToken, confirmed: true })).error?.code).toBe("state_changed");
+    expect(setup.client.createNotebook).not.toHaveBeenCalled();
+  });
+  async function notebookFixture() {
+    const setup = await fixture();
+    const state = { id: NOTEBOOK_ID, name: "Original", sort: 10, closed: false, encrypted: false };
+    setup.client.listNotebooks = vi.fn(async () => [{ ...state }]);
+    setup.client.renameNotebook = vi.fn(async (_id, name) => { state.name = name; });
+    setup.client.setNotebookSort = vi.fn(async (_id, sort) => { state.sort = sort; });
+    await setup.plugin.registerNotebookManagementTools();
+    return { ...setup, state };
+  }
+
+  it.each([
+    ["rename_notebook", { newName: "Renamed" }, "renameNotebook"],
+    ["set_notebook_sort", { newSort: 42 }, "setNotebookSort"],
+  ] as const)("%s requires a one-time exact confirmation and verifies readback", async (name, change, method) => {
+    const setup = await notebookFixture();
+    const fn = setup.handler(name);
+    const args = { notebookId: NOTEBOOK_ID, ...change };
+    const preview = await fn(args);
+    expect(preview.result).toMatchObject({ mode: "preview", requiresUserConfirmation: true });
+    const token = preview.result?.previewToken;
+    expect((await fn({ ...args, previewToken: token })).error?.code).toBe("confirmation_required");
+    expect(setup.client[method]).not.toHaveBeenCalled();
+    expect((await fn({ ...args, previewToken: token, confirmed: true })).result).toMatchObject({ mode: "executed", verified: true });
+    expect(setup.client[method]).toHaveBeenCalledTimes(1);
+    expect((await fn({ ...args, previewToken: token, confirmed: true })).error?.code).toBe("preview_expired");
+  });
+
+  it("denies a forbidden notebook and a denied policy before writing", async () => {
+    const setup = await notebookFixture();
+    setup.plugin.policy.access.selectedNotebookIds = [];
+    expect((await setup.handler("rename_notebook")({ notebookId: NOTEBOOK_ID, newName: "New" })).error?.code).toBe("notebook_denied");
+    setup.plugin.policy.operations.rename = "deny";
+    expect((await setup.handler("rename_notebook")({ notebookId: NOTEBOOK_ID, newName: "New" })).error?.code).toBe("operation_denied");
+    expect(setup.client.renameNotebook).not.toHaveBeenCalled();
+  });
+
+  it("rejects stale state, argument changes and changed policy", async () => {
+    const setup = await notebookFixture();
+    const fn = setup.handler("rename_notebook");
+    const args = { notebookId: NOTEBOOK_ID, newName: "New" };
+    let p = await fn(args);
+    expect((await fn({ ...args, newName: "Other", previewToken: p.result?.previewToken, confirmed: true })).error?.code).toBe("invalid_request");
+    setup.state.sort = 11;
+    expect((await fn({ ...args, previewToken: p.result?.previewToken, confirmed: true })).error?.code).toBe("state_changed");
+    p = await fn(args);
+    setup.plugin.policy.access.selectedNotebookIds = [];
+    expect((await fn({ ...args, previewToken: p.result?.previewToken, confirmed: true })).error?.code).toBe("notebook_denied");
+    expect(setup.client.renameNotebook).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate names without revealing the other notebook", async () => {
+    const setup = await notebookFixture();
+    setup.client.listNotebooks = vi.fn(async () => [setup.state, { id: "20260101000003-other01", name: "Other" }]);
+    const result = await setup.handler("rename_notebook")({ notebookId: NOTEBOOK_ID, newName: "Other" });
+    expect(result.error?.code).toBe("name_conflict");
+    expect(JSON.stringify(result)).not.toContain("20260101000003-other01");
+    expect(setup.client.renameNotebook).not.toHaveBeenCalled();
+  });
+
+  it("never repeats an uncertain write or a mismatching readback", async () => {
+    const setup = await notebookFixture();
+    const fn = setup.handler("rename_notebook");
+    const args = { notebookId: NOTEBOOK_ID, newName: "New" };
+    setup.client.renameNotebook = vi.fn(async () => { throw new Error("connection lost"); });
+    let p = await fn(args);
+    expect((await fn({ ...args, previewToken: p.result?.previewToken, confirmed: true })).error?.code).toBe("outcome_unknown");
+    expect(setup.client.renameNotebook).toHaveBeenCalledTimes(1);
+    setup.client.renameNotebook = vi.fn(async () => undefined);
+    p = await fn(args);
+    expect((await fn({ ...args, previewToken: p.result?.previewToken, confirmed: true })).error?.code).toBe("verification_failed");
+    expect(setup.client.renameNotebook).toHaveBeenCalledTimes(1);
+  });
+});
 
 function document(id = DOCUMENT_ID, title = "Original"): BlockRecord {
   return {

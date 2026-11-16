@@ -109,6 +109,8 @@ import {
   snapshotDocument,
   STRUCTURE_PREVIEW_TTL_MS,
   type MovePreview,
+  type NotebookManagementPreview,
+  type NotebookCreatePreview,
   type RenamePreview,
   type StructurePreview,
   type StructureSnapshot,
@@ -465,6 +467,8 @@ class SiYuanMasterKernelPlugin {
 
     await this.registerPolicyTool();
     await this.registerNotebookTool();
+    await this.registerNotebookManagementTools();
+    await this.registerCreateNotebookTool();
     await this.registerDocumentTreeTool();
     await this.registerSearchTool();
     await this.registerReadTool();
@@ -977,7 +981,8 @@ class SiYuanMasterKernelPlugin {
           authorityLookup:
             "optional registered source/title/alias/type lookup for workflows that opt into the registry",
           originalToolsPreserved: 16,
-          totalTools: 30,
+          totalTools: 33,
+          notebookManagement: "notebook create, rename and single-notebook sort: policy, exact preview, confirmation, state recheck and readback",
           wikiTemplates:
             "optional versioned catalog + preview-only renderer + structure validator; no note writes",
           sourceIngestPlan:
@@ -1041,6 +1046,7 @@ class SiYuanMasterKernelPlugin {
               notebooks: notebooks.map((notebook) => ({
                 id: notebook.id,
                 name: notebook.name,
+                sort: notebook.sort,
                 closed: Boolean(notebook.closed),
                 encrypted: Boolean(notebook.encrypted),
               })),
@@ -1048,6 +1054,198 @@ class SiYuanMasterKernelPlugin {
           },
         ),
     );
+  }
+
+  private async registerCreateNotebookTool(): Promise<void> {
+    await this.registerTool(
+      "create_notebook",
+      genericToolConfig(
+        "Safely Create a Notebook",
+        "In denylist mode only, preview a new notebook, obtain explicit confirmation, recheck policy and name, create once and verify the returned ID. Allowlist mode cannot pre-authorize a new ID and is denied.",
+        {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "New plain notebook name." },
+            previewToken: { type: "string", description: "Omit to preview; supply the one-time token to execute." },
+            confirmed: confirmedProperty(),
+          },
+          required: ["name"],
+          additionalProperties: false,
+        },
+        false,
+      ),
+      async input => {
+        const executing = Boolean(optionalString(input.previewToken));
+        const confirmed = input.confirmed === true;
+        return this.runTool(executing ? "notebook_create" : "notebook_create_preview", !executing,
+          { confirmed, preview: !executing }, async () => {
+            this.ensureOperationCanPreview("create");
+            const name = stringInput(input.name, "name", { maxLength: 256 });
+            if (name !== name.trim() || !name || /[\x00-\x1f\x7f<>]/.test(name)) {
+              throw new PolicyViolation("invalid_request", "Notebook name must be a nonempty plain label without control characters or markup.");
+            }
+            if (this.policy.access.mode !== "denylist") {
+              throw new PolicyViolation("operation_denied", "Notebook creation is unavailable in allowlist mode; a new notebook ID cannot be pre-authorized.");
+            }
+            const policyFingerprint = await computePolicyFingerprint(clonePolicy(this.policy));
+            if (!executing) {
+              if ((await this.listAllNotebooks()).some(n => n.name === name)) {
+                throw new PolicyViolation("name_conflict", "The requested notebook name is unavailable.");
+              }
+              const preview = this.saveStructurePreview<NotebookCreatePreview>({
+                kind: "notebook_create", newName: name, policyFingerprint,
+              });
+              return { mode: "preview", previewToken: preview.token,
+                expiresAt: new Date(preview.expiresAt).toISOString(), proposed: { name },
+                policyDecision: this.policy.operations.create, requiresUserConfirmation: true,
+                impact: "Creates one notebook; the current denylist policy applies to it.",
+                collisionCheck: "no matching notebook name at preview time" };
+            }
+            const pending = this.getStructurePreview<NotebookCreatePreview>(input.previewToken, "notebook_create");
+            this.ensureOperation("create", confirmed);
+            if (!confirmed) throw new PolicyViolation("confirmation_required", "Explicit approval of this exact notebook preview is required.");
+            if (pending.newName !== name) throw new PolicyViolation("invalid_request", "The request does not match the notebook preview.");
+            this.consumeStructurePreview<NotebookCreatePreview>(input.previewToken, "notebook_create");
+            if (pending.policyFingerprint !== policyFingerprint) throw new PolicyViolation("state_changed", "The policy changed; request a new preview.");
+            if ((await this.listAllNotebooks()).some(n => n.name === name)) {
+              throw new PolicyViolation("name_conflict", "The requested notebook name is unavailable.");
+            }
+            if (this.policy.access.mode !== "denylist" ||
+                await computePolicyFingerprint(clonePolicy(this.policy)) !== pending.policyFingerprint) {
+              throw new PolicyViolation("state_changed", "The policy changed; request a new preview.");
+            }
+            this.ensureOperation("create", confirmed);
+            const created = await this.runBodyWrite(() => this.client.createNotebook(name), "create_notebook");
+            let after: NotebookSummary;
+            try { after = await this.assertNotebookAllowed(created.id); }
+            catch { throw new PolicyViolation("outcome_unknown", "Notebook creation was accepted but readback or access failed; do not auto-retry."); }
+            if (after.name !== name) throw new PolicyViolation("verification_failed", "Notebook creation was accepted but its name was not verified; do not auto-retry.");
+            return { mode: "executed", notebookId: after.id, name: after.name, verified: true };
+          });
+      },
+    );
+  }
+
+  private async registerNotebookManagementTools(): Promise<void> {
+    for (const kind of ["notebook_rename", "notebook_sort"] as const) {
+      const rename = kind === "notebook_rename";
+      const operation: ControlledOperation = rename ? "rename" : "move";
+      await this.registerTool(
+        rename ? "rename_notebook" : "set_notebook_sort",
+        genericToolConfig(
+          rename ? "Safely Rename an Allowed Notebook" : "Safely Set an Allowed Notebook Sort",
+          "Two-step exact preview and explicit confirmation; checks notebook access and current policy again before one write, then reads back. Never auto-retry an uncertain result.",
+          {
+            type: "object",
+            properties: {
+              notebookId: { type: "string", description: "Exact allowed notebook ID." },
+              ...(rename
+                ? { newName: { type: "string", description: "New plain notebook name." } }
+                : { newSort: { type: "integer", description: "New signed 32-bit sort value for this notebook only." } }),
+              previewToken: { type: "string", description: "Omit to preview; provide the exact one-time token to execute." },
+              confirmed: confirmedProperty(),
+            },
+            required: ["notebookId", rename ? "newName" : "newSort"],
+            additionalProperties: false,
+          },
+          false,
+        ),
+        async (input) => {
+          const executing = Boolean(optionalString(input.previewToken));
+          const confirmed = input.confirmed === true;
+          const notebookId = optionalString(input.notebookId);
+          return this.runTool(
+            executing ? kind : `${kind}_preview`,
+            !executing,
+            { notebookId, confirmed, preview: !executing },
+            async () => {
+              this.ensureOperationCanPreview(operation);
+              const id = assertSiyuanId(input.notebookId, "notebookId");
+              if (!isNotebookAllowed(id, this.policy)) {
+                throw new PolicyViolation("notebook_denied", "The requested notebook is outside the active SiYuanMaster policy.");
+              }
+              let newName: string | undefined;
+              let newSort: number | undefined;
+              if (rename) {
+                newName = stringInput(input.newName, "newName", { maxLength: 256 });
+                if (newName !== newName.trim() || !newName || /[\x00-\x1f\x7f<>]/.test(newName)) {
+                  throw new PolicyViolation("invalid_request", "Notebook name must be a nonempty plain label without control characters or markup.");
+                }
+              } else {
+                if (typeof input.newSort !== "number" || !Number.isInteger(input.newSort) ||
+                    input.newSort < -2147483648 || input.newSort > 2147483647) {
+                  throw new PolicyViolation("invalid_request", "newSort must be a signed 32-bit integer.");
+                }
+                newSort = input.newSort;
+              }
+              // Access must be checked before returning notebook metadata.
+              const notebook = await this.assertNotebookAllowed(id);
+              if (!executing) {
+                if ((rename && notebook.name === newName) || (!rename && notebook.sort === newSort)) {
+                  throw new PolicyViolation("invalid_request", "The requested notebook state is unchanged.");
+                }
+                if (rename && (await this.listAllNotebooks()).some(n => n.id !== id && n.name === newName)) {
+                  throw new PolicyViolation("name_conflict", "The requested notebook name is unavailable.");
+                }
+                const preview = this.saveStructurePreview<NotebookManagementPreview>({
+                  kind, notebookId: id, name: notebook.name, sort: notebook.sort,
+                  closed: Boolean(notebook.closed), encrypted: Boolean(notebook.encrypted),
+                  newName, newSort,
+                });
+                return {
+                  mode: "preview", previewToken: preview.token,
+                  expiresAt: new Date(preview.expiresAt).toISOString(),
+                  source: { notebookId: id, name: notebook.name, sort: notebook.sort, closed: Boolean(notebook.closed) },
+                  proposed: rename ? { name: newName } : { sort: newSort },
+                  policyDecision: this.policy.operations[operation],
+                  requiresUserConfirmation: true,
+                  impact: rename
+                    ? "Notebook identity and its documents remain; the notebook root document title may also change."
+                    : "Only this notebook's sort value is written; other notebooks retain their sort values.",
+                  collisionCheck: rename ? "no matching notebook name at preview time" : "not applicable",
+                };
+              }
+              const pending = this.getStructurePreview<NotebookManagementPreview>(input.previewToken, kind);
+              this.ensureOperation(operation, confirmed);
+              if (!confirmed) throw new PolicyViolation("confirmation_required", "Explicit approval of this exact notebook preview is required.");
+              if (pending.notebookId !== id || pending.newName !== newName || pending.newSort !== newSort) {
+                throw new PolicyViolation("invalid_request", "The request does not match the notebook preview.");
+              }
+              this.consumeStructurePreview<NotebookManagementPreview>(input.previewToken, kind);
+              if (notebook.name !== pending.name || notebook.sort !== pending.sort ||
+                  Boolean(notebook.closed) !== pending.closed || Boolean(notebook.encrypted) !== pending.encrypted) {
+                throw new PolicyViolation("state_changed", "Notebook state changed; request a new preview.");
+              }
+              if (rename && (await this.listAllNotebooks()).some(n => n.id !== id && n.name === newName)) {
+                throw new PolicyViolation("name_conflict", "The requested notebook name is unavailable.");
+              }
+              this.ensureOperation(operation, confirmed);
+              const current = await this.assertNotebookAllowed(id);
+              if (current.name !== pending.name || current.sort !== pending.sort ||
+                  Boolean(current.closed) !== pending.closed || Boolean(current.encrypted) !== pending.encrypted) {
+                throw new PolicyViolation("state_changed", "Notebook state changed; request a new preview.");
+              }
+              this.ensureOperation(operation, confirmed);
+              await this.runBodyWrite(
+                () => rename ? this.client.renameNotebook(id, newName!) : this.client.setNotebookSort(id, newSort!),
+                `${kind} (notebookId=${id})`,
+              );
+              let after: NotebookSummary;
+              try {
+                after = await this.assertNotebookAllowed(id);
+              } catch {
+                throw new PolicyViolation("outcome_unknown", "Notebook write accepted but readback failed; do not auto-retry.");
+              }
+              if ((rename && after.name !== newName) || (!rename && after.sort !== newSort)) {
+                throw new PolicyViolation("verification_failed", "Notebook write accepted but the expected state was not verified; do not auto-retry.");
+              }
+              return { mode: "executed", notebookId: id, previousName: pending.name,
+                name: after.name, previousSort: pending.sort, sort: after.sort, verified: true };
+            },
+          );
+        },
+      );
+    }
   }
 
   private async registerDocumentTreeTool(): Promise<void> {

@@ -28,6 +28,24 @@
       "confirmDefault": false
     },
     {
+      "name": "create_notebook",
+      "category": "notebook",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
+      "name": "set_notebook_sort",
+      "category": "notebook",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
+      "name": "rename_notebook",
+      "category": "notebook",
+      "readOnly": false,
+      "confirmDefault": true
+    },
+    {
       "name": "list_document_tree",
       "category": "tree",
       "readOnly": true,

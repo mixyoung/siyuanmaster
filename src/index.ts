@@ -182,24 +182,12 @@ export default class SiYuanMasterPlugin extends Plugin {
   }
 
   private registerSettings(): void {
-    const openButton = document.createElement("button");
-    openButton.className =
-      "b3-button b3-button--outline fn__flex-center fn__size200";
-    openButton.textContent = "打开配置";
-    openButton.addEventListener("click", () => {
-      void this.openSettingsDialog();
-    });
+    // Preserve the settings marker for hosts that check plugin.setting.
+    this.setting = new Setting({});
+  }
 
-    this.setting = new Setting({
-      confirmCallback: () => {
-        void this.openSettingsDialog();
-      },
-    });
-    this.setting.addItem({
-      title: PRODUCT_DISPLAY_NAME,
-      description: "配置访问边界、安全写入策略、操作权限和标签策略",
-      actionElement: openButton,
-    });
+  openSetting(): void {
+    void this.openSettingsDialog();
   }
 
   private bindDockEvents(): void {

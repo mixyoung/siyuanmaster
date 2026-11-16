@@ -139,6 +139,14 @@ Use this workflow when the user wants a webpage to remain visually available aft
 
 ## Rename and move
 
+### Notebook management
+
+- Discover `create_notebook`, `rename_notebook`, and `set_notebook_sort` in the current controlled catalog; do not substitute native administrator tools when they are absent.
+- Each operation requires an exact preview and explicit user approval, even when its ordinary operation policy is `allow`. Show the source, target, impact, and collision result; use the unchanged inputs and the one-time token with `confirmed=true` only after approval.
+- Creation is unavailable in allowlist mode because a future notebook ID cannot be pre-authorized. A notebook created under denylist mode is governed by that policy; creating it does not modify access settings.
+- Rename follows the `rename` operation decision; sort follows `move`; creation follows `create`. All recheck policy, relevant state and access before writing, then read back. A notebook rename may also change its root document title.
+- Treat `state_changed`, expired previews, unknown outcomes and readback mismatches as stop conditions. Never retry an uncertain write automatically. Sort changes only the selected notebook's explicit sort value; visible relative ordering depends on other notebooks and the app's current display settings.
+
 - Use only `rename_note` and `move_note`; never use native file-tree tools.
 - First call without `previewToken`. This is a non-mutating preview.
 - Show the source, destination, affected subtree count, and conflict result to the user.
