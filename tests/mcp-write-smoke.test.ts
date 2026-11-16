@@ -57,6 +57,8 @@ const CATALOG = {
     "read_note_segments",
     "open_scope_read",
     "scope_read_status",
+    "ack_scope_read",
+    "close_scope_read",
     "register_knowledge_source",
     "register_wiki_authority",
     "knowledge_status",

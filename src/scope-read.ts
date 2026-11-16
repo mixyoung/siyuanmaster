@@ -11,6 +11,26 @@ export const MAX_STORED_SCOPE_SESSIONS = 12;
 export const SCOPE_NEXT_DOCUMENTS = 50;
 /** Hard cap on documents listed by scope_read_status with includeDocuments. */
 export const SCOPE_STATUS_DOCUMENTS = 200;
+export const SCOPE_VERIFY_BATCH = 8;
+export const MAX_PENDING_PAGE_RECEIPTS = 128;
+export const SCOPE_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface ScopePageReceipt {
+  receiptId: string;
+  documentId: string;
+  contentHash: string;
+  contentLength: number;
+  start: number;
+  end: number;
+}
+
+export interface ScopeVerification {
+  token: string;
+  revision: number;
+  nextIndex: number;
+  startedAt: string;
+  verifiedAt?: string;
+}
 
 export interface ScopeMember {
   id: string;
@@ -43,7 +63,11 @@ export interface ScopeDocumentState {
   contentHash?: string;
   /** Full-export length in UTF-16 code units. */
   contentLength?: number;
-  /** Merged half-open [start, end) intervals of page content actually returned. */
+  /** True only after the caller acknowledges a receipt, including empty documents. */
+  deliveryConfirmed?: boolean;
+  /** Issued/exported ranges, including legacy v1 coverage; never prove delivery. */
+  servedCoverage?: Array<[number, number]>;
+  /** Merged half-open [start, end) intervals explicitly acknowledged by the caller. */
   coverage: Array<[number, number]>;
   lastError?: string;
 }
@@ -58,6 +82,14 @@ export interface ScopeSession {
   enumerationCompleted: boolean;
   /** A coverage persistence write failed; state is memory-only until recovered. */
   persistDegraded?: boolean;
+  state?: "active" | "closed" | "superseded" | "expired";
+  updatedAt?: string;
+  /** Historical completion frees capacity; never substitutes for a fresh verification. */
+  completedAt?: string;
+  revision?: number;
+  receipts?: ScopePageReceipt[];
+  acknowledgedReceiptIds?: string[];
+  verification?: ScopeVerification;
   documents: Record<string, ScopeDocumentState>;
 }
 
@@ -122,6 +154,13 @@ export interface PagedSlice {
  * `slice`/`length` and the reported `contentLength`.
  */
 export function slicePage(full: string, offset: number, maxChars: number): PagedSlice {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > full.length) {
+    throw new Error("offset must be a non-negative integer within the full export length");
+  }
+  if (!Number.isSafeInteger(maxChars) || maxChars < 1) throw new Error("page size must be a positive integer");
+  if (offset > 0 && isHighSurrogate(full.charCodeAt(offset - 1)) && isLowSurrogate(full.charCodeAt(offset))) {
+    throw new Error("offset splits a UTF-16 surrogate pair; use the preceding page's nextOffset");
+  }
   let end = Math.min(offset + maxChars, full.length);
   if (
     end < full.length &&
@@ -178,6 +217,7 @@ export function coverageIsExact(
 export function documentComplete(document: ScopeDocumentState): boolean {
   return (
     document.status === "pending" &&
+    document.deliveryConfirmed === true &&
     document.contentHash !== undefined &&
     document.contentLength !== undefined &&
     coverageIsExact(document.coverage, document.contentLength)
@@ -214,9 +254,13 @@ export function scopeCounts(session: ScopeSession): ScopeCounts {
  * never satisfy this predicate.
  */
 export function scopeComplete(session: ScopeSession): boolean {
-  if (!session.enumerationCompleted || session.persistDegraded) return false;
+  if (!session.enumerationCompleted || session.persistDegraded ||
+    (session.state ?? "active") !== "active" ||
+    session.verification?.revision !== (session.revision ?? 0) ||
+    !session.verification?.verifiedAt) return false;
   const counts = scopeCounts(session);
   return (
+    session.verification.nextIndex === counts.total &&
     counts.failed === 0 &&
     counts.truncated === 0 &&
     counts.changed === 0 &&
@@ -229,50 +273,8 @@ export function newSessionId(): string {
   return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Sorts prune candidates: complete sessions first, then by age. */
-function pruneOrder(a: ScopeSession, b: ScopeSession): number {
-  const aComplete = scopeComplete(a);
-  const bComplete = scopeComplete(b);
-  if (aComplete !== bComplete) return aComplete ? -1 : 1;
-  return Date.parse(a.createdAt) - Date.parse(b.createdAt);
-}
-
-/**
- * Bounds stored sessions. Complete sessions are pruned before incomplete
- * ones; the most recent MAX_ACTIVE_SCOPE_SESSIONS incomplete sessions are
- * always kept. Never drops a session that is still within the active window.
- */
-export function pruneScopeSessions(
-  sessions: readonly ScopeSession[],
-): ScopeSession[] {
-  const kept = [...sessions].sort(pruneOrder);
-  if (kept.length <= MAX_STORED_SCOPE_SESSIONS) {
-    return kept.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  }
-  const pruned = kept.slice(kept.length - MAX_STORED_SCOPE_SESSIONS);
-  const activeIncomplete = pruned.filter((session) => !scopeComplete(session));
-  if (activeIncomplete.length > MAX_ACTIVE_SCOPE_SESSIONS) {
-    // Keep the newest incomplete sessions even beyond the stored cap boundary
-    // when the alternative would be silently dropping live work.
-    const protect = new Set(
-      [...sessions]
-        .filter((session) => !scopeComplete(session))
-        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-        .slice(0, MAX_ACTIVE_SCOPE_SESSIONS)
-        .map((session) => session.sessionId),
-    );
-    const result = sessions.filter(
-      (session) => protect.has(session.sessionId) || scopeComplete(session),
-    );
-    return result
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-      .slice(0, Math.max(MAX_STORED_SCOPE_SESSIONS, protect.size));
-  }
-  return pruned.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-}
-
 /** Parses and validates a stored session payload; returns undefined on any structural doubt. */
-export function parseScopeSession(raw: unknown): ScopeSession | undefined {
+export function parseScopeSession(raw: unknown, schemaVersion = 2): ScopeSession | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
   if (
@@ -283,6 +285,8 @@ export function parseScopeSession(raw: unknown): ScopeSession | undefined {
     (record.rootDocumentId !== null && typeof record.rootDocumentId !== "string") ||
     typeof record.scopeFingerprint !== "string" ||
     typeof record.enumerationCompleted !== "boolean" ||
+    (record.state !== undefined && !["active", "closed", "superseded", "expired"].includes(String(record.state))) ||
+    (record.revision !== undefined && (!Number.isSafeInteger(record.revision) || Number(record.revision) < 0)) ||
     !record.documents ||
     typeof record.documents !== "object" ||
     Array.isArray(record.documents)
@@ -304,27 +308,44 @@ export function parseScopeSession(raw: unknown): ScopeSession | undefined {
         (range) =>
           !Array.isArray(range) ||
           range.length !== 2 ||
-          typeof range[0] !== "number" ||
-          typeof range[1] !== "number",
+          !Number.isSafeInteger(range[0]) || !Number.isSafeInteger(range[1]) ||
+          range[0] < 0 || range[1] < range[0],
       ) ||
       (doc.contentHash !== undefined && typeof doc.contentHash !== "string") ||
-      (doc.contentLength !== undefined && typeof doc.contentLength !== "number")
+      (doc.contentLength !== undefined && (!Number.isSafeInteger(doc.contentLength) || Number(doc.contentLength) < 0)) ||
+      (doc.contentMark !== undefined && typeof doc.contentMark !== "string") ||
+      (doc.deliveryConfirmed !== undefined && typeof doc.deliveryConfirmed !== "boolean")
     ) {
       return undefined;
     }
+    const served = schemaVersion === 1 ? doc.coverage : doc.servedCoverage ?? [];
+    if (!Array.isArray(served) || served.some(range => !Array.isArray(range) || range.length !== 2 ||
+      !Number.isSafeInteger(range[0]) || !Number.isSafeInteger(range[1]) || range[0] < 0 || range[1] < range[0])) return undefined;
     documents[id] = {
       status: doc.status as ScopeDocumentStatus,
       path: doc.path,
       updated: doc.updated,
+      contentMark: doc.contentMark as string | undefined,
       contentHash: doc.contentHash as string | undefined,
       contentLength: doc.contentLength as number | undefined,
-      coverage: (doc.coverage as Array<[number, number]>).map((range) => [
+      deliveryConfirmed: schemaVersion === 2 && doc.deliveryConfirmed === true,
+      servedCoverage: served as Array<[number, number]>,
+      coverage: (schemaVersion === 1 ? [] : doc.coverage as Array<[number, number]>).map((range) => [
         range[0],
         range[1],
       ]),
       lastError: typeof doc.lastError === "string" ? doc.lastError : undefined,
     };
   }
+  const receipts = schemaVersion === 2 ? record.receipts ?? [] : [];
+  if (!Array.isArray(receipts) || receipts.length > MAX_PENDING_PAGE_RECEIPTS || receipts.some(receipt =>
+    !receipt || typeof receipt !== "object" || typeof receipt.receiptId !== "string" ||
+    typeof receipt.documentId !== "string" || !documents[receipt.documentId] ||
+    typeof receipt.contentHash !== "string" || !Number.isSafeInteger(receipt.contentLength) ||
+    !Number.isSafeInteger(receipt.start) || !Number.isSafeInteger(receipt.end) ||
+    receipt.start < 0 || receipt.end < receipt.start || receipt.end > receipt.contentLength)) return undefined;
+  const acknowledged = schemaVersion === 2 ? record.acknowledgedReceiptIds ?? [] : [];
+  if (!Array.isArray(acknowledged) || acknowledged.length > 256 || acknowledged.some(id => typeof id !== "string")) return undefined;
   return {
     sessionId: record.sessionId,
     createdAt: record.createdAt,
@@ -333,6 +354,14 @@ export function parseScopeSession(raw: unknown): ScopeSession | undefined {
     scopeFingerprint: record.scopeFingerprint,
     enumerationCompleted: record.enumerationCompleted,
     persistDegraded: record.persistDegraded === true || undefined,
+    state: (record.state as ScopeSession["state"]) ?? "active",
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : record.createdAt,
+    completedAt: schemaVersion === 2 && typeof record.completedAt === "string" ? record.completedAt : undefined,
+    revision: Number(record.revision ?? 0),
+    receipts: receipts as ScopePageReceipt[],
+    acknowledgedReceiptIds: acknowledged as string[],
+    // A restart preserves acknowledgements but always requires a fresh hash verification cycle.
+    verification: undefined,
     documents,
   };
 }

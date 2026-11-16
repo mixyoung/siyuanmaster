@@ -45,6 +45,8 @@ const CATALOG = {
     "read_note_segments",
     "open_scope_read",
     "scope_read_status",
+    "ack_scope_read",
+    "close_scope_read",
     "register_knowledge_source",
     "register_wiki_authority",
     "knowledge_status",
@@ -357,14 +359,14 @@ describe("mcp-smoke catalog set validation", () => {
     expect(buildAgentCapabilityToolName("x".repeat(80), "y")).toHaveLength(64);
   });
 
-  it("matches exactly 33 plugin tools and zero legacy", () => {
+  it("matches exactly 35 plugin tools and zero legacy", () => {
     const discovered = [
       ...FQ_ALL,
       "some_native_tool",
     ];
     const v = validateAgainstCatalog(discovered, CATALOG);
-    expect(v.expectedCount).toBe(33);
-    expect(v.actualCount).toBe(33);
+    expect(v.expectedCount).toBe(35);
+    expect(v.actualCount).toBe(35);
     expect(v.missing).toEqual([]);
     expect(v.extra).toEqual([]);
     expect(v.legacyCount).toBe(0);
@@ -378,7 +380,7 @@ describe("mcp-smoke catalog set validation", () => {
       pluginTools: CATALOG.pluginTools.slice(0, 27),
     };
     expect(() => validateAgainstCatalog(FQ_ALL.slice(0, 27), short)).toThrow(
-      /pluginTools\.length must be 33/,
+      /pluginTools\.length must be 35/,
     );
     const long = {
       product: { technicalId: TECHNICAL_ID },
@@ -390,21 +392,21 @@ describe("mcp-smoke catalog set validation", () => {
     };
     expect(() =>
       validateAgainstCatalog([...FQ_ALL, FQ("extra_tool")], long),
-    ).toThrow(/pluginTools\.length must be 33/);
+    ).toThrow(/pluginTools\.length must be 35/);
   });
 
-  it("loads real catalog/capabilities.json with exactly 33 plugin tools", async () => {
+  it("loads real catalog/capabilities.json with exactly 35 plugin tools", async () => {
     const catalog = await loadCatalog(catalogPath);
-    expect(catalog.pluginTools).toHaveLength(33);
+    expect(catalog.pluginTools).toHaveLength(35);
     expect(catalog.namespaces.plugin).toBe(PLUGIN_NS);
     const discovered = catalog.pluginTools.map(
       (t: { name: string }) =>
         buildAgentCapabilityToolName(catalog.product.technicalId, t.name),
     );
-    expect(discovered).toHaveLength(33);
+    expect(discovered).toHaveLength(35);
     const v = validateAgainstCatalog(discovered, catalog);
-    expect(v.expectedCount).toBe(33);
-    expect(v.actualCount).toBe(33);
+    expect(v.expectedCount).toBe(35);
+    expect(v.actualCount).toBe(35);
     expect(() => assertCatalogMatch(v)).not.toThrow();
   });
 
@@ -1246,7 +1248,7 @@ describe("mcp-smoke orchestration", () => {
 
     const joined = [...logs, JSON.stringify(summary)].join("\n");
     expect(joined).toMatch(/mcp-smoke PASS/);
-    expect(joined).toMatch(/catalog match ok expected=33/);
+    expect(joined).toMatch(/catalog match ok expected=35/);
     expect(joined).not.toContain(token);
     expect(joined).not.toContain(SESSION);
     expect(joined).not.toContain("POLICY_SECRET_VALUE");
@@ -1254,6 +1256,6 @@ describe("mcp-smoke orchestration", () => {
     expect(joined).not.toContain("Private Notebook");
     expect(summary.session).toBe(true);
     expect(summary.ok).toBe(true);
-    expect(summary.catalog).toEqual({ expected: 33, actual: 33, legacy: 0 });
+    expect(summary.catalog).toEqual({ expected: 35, actual: 35, legacy: 0 });
   });
 });

@@ -249,6 +249,8 @@ When the installed plugin exposes `sourceIngestPlan`, call `plan_source_ingest` 
 
 ### Query
 
+For an explicitly requested whole-directory read, follow the scope-read receipt and verification protocol in the parent Skill: all authorized members participate, including the root. A registry or Wiki classification never limits this scope. Acknowledge only received pages, complete every hash-verification batch, and close abandoned sessions. Source-ingest workflows below remain optional.
+
 Query is read-only by default. For ordinary questions the knowledge base is the full set of authorized notes: search and read those first — no registration, Wiki identity, or classification is a precondition. Reading authority pages first applies only inside an explicit Wiki-compounding workflow; browse externally only for current or missing evidence. For multi-hop questions, repeat:
 
 `search → selective read → follow material accessible links → test evidence sufficiency`

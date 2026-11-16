@@ -13,6 +13,7 @@ import {
   attachBlockStateHashes,
   blockDisplayText,
   buildOutline,
+  mapWithConcurrency,
   resolveDocumentPath,
   windowBlocks,
   type BlockRow,
@@ -981,7 +982,7 @@ class SiYuanMasterKernelPlugin {
           authorityLookup:
             "optional registered source/title/alias/type lookup for workflows that opt into the registry",
           originalToolsPreserved: 16,
-          totalTools: 33,
+          totalTools: 35,
           notebookManagement: "notebook create, rename and single-notebook sort: policy, exact preview, confirmation, state recheck and readback",
           wikiTemplates:
             "optional versioned catalog + preview-only renderer + structure validator; no note writes",
@@ -1520,6 +1521,7 @@ class SiYuanMasterKernelPlugin {
                 query,
                 notebookIds,
                 documentIds: page,
+                scope,
               }),
             );
             const matches = pickBestMatchPerDocument(rows).map((row) => ({
@@ -1543,6 +1545,9 @@ class SiYuanMasterKernelPlugin {
                     afterDocumentId: page[page.length - 1],
                   })
                 : undefined;
+            if (matches.length !== page.length || matches.some((match, index) => match.documentId !== page[index])) {
+              throw new PolicyViolation("state_changed", "search matches changed between document selection and snippet read; restart the search");
+            }
             return { count: matches.length, moreDocuments, nextCursor, matches };
           },
         );
@@ -1561,8 +1566,9 @@ class SiYuanMasterKernelPlugin {
     this.ensureOperation("read", confirmed);
     const scopeSessionId = optionalString(scopeSessionIdValue);
     if (scopeSessionId) {
+      await this.coverage.load();
       const session = this.coverage.getSession(scopeSessionId);
-      if (!session) {
+      if (!session || session.state !== "active") {
         throw new PolicyViolation(
           "invalid_request",
           `unknown scope session: ${scopeSessionId}`,
@@ -1596,7 +1602,10 @@ class SiYuanMasterKernelPlugin {
       1_000,
       50_000,
     );
-    const offset = boundedInteger(offsetValue, 0, 0, 2_000_000);
+    const offset = offsetValue === undefined ? 0 : offsetValue;
+    if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0) {
+      throw new PolicyViolation("invalid_request", "offset must be a non-negative safe integer");
+    }
     const expectedContentHash = optionalSha256(expectedHashValue);
     if (offset > 0 && !expectedContentHash) {
       throw new PolicyViolation(
@@ -1628,10 +1637,16 @@ class SiYuanMasterKernelPlugin {
         "note content changed since the first page; restart this document from offset 0",
       );
     }
-    const page = slicePage(exported.content, offset, maxChars);
+    let page: ReturnType<typeof slicePage>;
+    try { page = slicePage(exported.content, offset, maxChars); }
+    catch (error) { throw new PolicyViolation("invalid_request", error instanceof Error ? error.message : String(error)); }
+    this.ensureOperation("read", confirmed);
+    await this.assertDocumentAllowed(context.document.id);
+    let pageReceipt: Awaited<ReturnType<CoverageStore["recordReadPage"]>> | undefined;
+    let coverageError: string | undefined;
     if (scopeSessionId) {
       try {
-        this.coverage.recordReadPage({
+        pageReceipt = await this.coverage.recordReadPage({
           sessionId: scopeSessionId,
           documentId: context.document.id,
           updated: context.document.updated,
@@ -1641,10 +1656,7 @@ class SiYuanMasterKernelPlugin {
           end: offset + page.content.length,
         });
       } catch (error) {
-        throw new PolicyViolation(
-          "invalid_request",
-          error instanceof Error ? error.message : String(error),
-        );
+        coverageError = error instanceof Error ? error.message : String(error);
       }
     }
     return {
@@ -1654,6 +1666,8 @@ class SiYuanMasterKernelPlugin {
       hPath: exported.hPath || context.document.hpath,
       tags: splitStoredTags(context.document.tag),
       content: page.content,
+      pageReceipt,
+      coverageError,
       offset,
       /** SHA-256 of the full export this page was cut from. */
       contentHash,
@@ -1698,7 +1712,7 @@ class SiYuanMasterKernelPlugin {
             scopeSessionId: {
               type: "string",
               description:
-                "Coverage session from open_scope_read. Each returned page is recorded; complete requires exact tiling of [0, contentLength).",
+                "Coverage session from open_scope_read. Confirm each received pageReceipt with ack_scope_read; exported pages alone never complete coverage.",
             },
             confirmed: confirmedProperty(),
           },
@@ -2245,6 +2259,16 @@ class SiYuanMasterKernelPlugin {
     }
   }
 
+  private async readScopeExport(documentId: string): Promise<{ content: string; hPath: string }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.client.exportMarkdown(documentId),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("scope verification read timed out")), 5000); }),
+      ]);
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+  }
+
   private markScopeDocumentBestEffort(
     sessionId: string,
     documentIdValue: unknown,
@@ -2255,7 +2279,7 @@ class SiYuanMasterKernelPlugin {
       const documentId =
         typeof documentIdValue === "string" ? documentIdValue : "";
       if (!documentId) return;
-      this.coverage.markDocument(sessionId, documentId, status, error);
+      void this.coverage.markDocument(sessionId, documentId, status, error).catch(() => undefined);
     } catch {
       // Coverage marking must never mask the original tool error.
     }
@@ -2287,6 +2311,43 @@ class SiYuanMasterKernelPlugin {
   }
 
   private async registerScopeReadTools(): Promise<void> {
+    await this.registerTool("ack_scope_read", genericToolConfig(
+      "Acknowledge Received Scope Pages",
+      "Confirms page receipts only after the caller has received the full read_note responses. Updates coverage metadata, never note content. Duplicate confirmations are idempotent; stale receipts require re-reading.",
+      { type: "object", properties: {
+        sessionId: { type: "string" }, receiptIds: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 }, confirmed: confirmedProperty(),
+      }, required: ["sessionId", "receiptIds"], additionalProperties: false }, true,
+    ), async input => this.runTool("ack_scope_read", true, {}, async () => {
+      this.ensureOperation("read", input.confirmed === true);
+      await this.coverage.load();
+      const sessionId = stringInput(input.sessionId, "sessionId", { maxLength: 64 });
+      const session = this.coverage.getSession(sessionId);
+      if (!session) throw new PolicyViolation("invalid_request", "unknown scope session");
+      await this.assertNotebookAllowed(session.notebookId);
+      const ids = stringArrayInput(input.receiptIds, "receiptIds", 100, 128);
+      if (!ids.length) throw new PolicyViolation("invalid_request", "receiptIds must not be empty");
+      // Re-check live document access before acknowledging a receipt from an earlier request.
+      for (const id of new Set(session.receipts?.filter(receipt => ids.includes(receipt.receiptId)).map(receipt => receipt.documentId))) {
+        const context = await this.assertDocumentAllowed(id);
+        if (context.document.box !== session.notebookId) throw new PolicyViolation("state_changed", "receipt document moved out of the session notebook");
+      }
+      this.ensureOperation("read", input.confirmed === true);
+      await this.assertNotebookAllowed(session.notebookId);
+      const updated = await this.coverage.acknowledge(sessionId, ids);
+      return { sessionId, acknowledged: ids.length, counts: scopeCounts(updated), complete: false, requiresVerification: true };
+    }));
+
+    await this.registerTool("close_scope_read", genericToolConfig(
+      "Close A Scope Read Session",
+      "Closes an explicitly identified abandoned coverage session and releases its active slot. Keeps progress history; never modifies notes. Returns no notebook or document details, including after notebook access is revoked.",
+      { type: "object", properties: { sessionId: { type: "string" }, confirmed: confirmedProperty() }, required: ["sessionId"], additionalProperties: false }, true,
+    ), async input => this.runTool("close_scope_read", true, {}, async () => {
+      this.ensureOperation("read", input.confirmed === true);
+      const sessionId = stringInput(input.sessionId, "sessionId", { maxLength: 64 });
+      await this.coverage.close(sessionId);
+      return { sessionId, closed: true, complete: false };
+    }));
+
     await this.registerTool(
       "open_scope_read",
       genericToolConfig(
@@ -2385,7 +2446,7 @@ class SiYuanMasterKernelPlugin {
       "scope_read_status",
       genericToolConfig(
         "Scope Read Coverage Status",
-        "Reports exact read coverage for one scope session: per-state counts, remaining documents, and the overall complete flag. Completion requires an unchanged member fingerprint, persisted coverage writes, every document's returned pages tiling [0, contentLength) under one content hash, and no unread, failed, changed, or blocked members. Completed documents are re-verified on every call.",
+        "Reports acknowledged coverage and verifies full export hashes in batches. Continue with nextVerificationCursor until complete=true; without a cursor starts a fresh verification. Completion is evidence of caller acknowledgement and per-document versions checked during verifiedStartedAt..verifiedAt, not proof of model understanding or an atomic cross-document snapshot.",
         {
           type: "object",
           properties: {
@@ -2398,6 +2459,7 @@ class SiYuanMasterKernelPlugin {
               description:
                 "Include a bounded per-document status list (first 200 documents).",
             },
+            verificationCursor: { type: "string", description: "nextVerificationCursor from the preceding batch; omit to start fresh hash verification." },
             confirmed: confirmedProperty(),
           },
           required: ["sessionId"],
@@ -2416,6 +2478,7 @@ class SiYuanMasterKernelPlugin {
             const sessionId = stringInput(input.sessionId, "sessionId", {
               maxLength: 64,
             });
+            await this.coverage.load();
             const stored = this.coverage.getSession(sessionId);
             if (!stored) {
               throw new PolicyViolation(
@@ -2445,7 +2508,39 @@ class SiYuanMasterKernelPlugin {
               members,
             );
             const scopeChanged = liveFingerprint !== stored.scopeFingerprint;
-            const session = scopeChanged ? stored : await this.coverage.resyncSession(sessionId, members);
+            let session = stored;
+            if (scopeChanged && stored.state === "active") session = await this.coverage.close(sessionId, "superseded");
+            else if (stored.state === "active") session = await this.coverage.resyncSession(sessionId, members);
+            const readyToVerify = !scopeChanged && session.state === "active" &&
+              Object.values(session.documents).every(documentComplete);
+            if (readyToVerify) {
+              const batch = await this.coverage.beginVerification(sessionId, optionalString(input.verificationCursor));
+              const observations = await mapWithConcurrency(batch.documentIds, 4, async documentId => {
+                try {
+                  const context = await this.assertDocumentAllowed(documentId);
+                  if (context.document.box !== stored.notebookId) throw new Error("document moved out of session notebook");
+                  const exported = await this.readScopeExport(documentId);
+                  const contentHash = await computeContentHash(exported.content);
+                  this.ensureOperation("read", confirmed);
+                  await this.assertDocumentAllowed(documentId);
+                  return { documentId, contentHash, contentLength: exported.content.length };
+                } catch (error) {
+                  return { documentId, error: error instanceof Error ? error.message : String(error),
+                    blocked: error instanceof PolicyViolation && ["notebook_denied", "operation_denied"].includes(error.code) };
+                }
+              });
+              this.ensureOperation("read", confirmed);
+              await this.assertNotebookAllowed(stored.notebookId);
+              // Recheck membership after IO too; never seal a certificate for an obsolete scope.
+              const finalRoot = stored.rootDocumentId ? await this.assertExactDocumentAllowed(stored.rootDocumentId) : undefined;
+              const finalMembers = await this.client.listScopeMembers({ notebookId: notebook.id, parentDocument: finalRoot?.document });
+              const finalFingerprint = await computeScopeFingerprint({ notebookId: notebook.id, rootDocumentId: stored.rootDocumentId }, finalMembers);
+              if (finalFingerprint !== stored.scopeFingerprint) {
+                session = await this.coverage.close(sessionId, "superseded");
+              } else {
+                session = await this.coverage.finishVerificationBatch(sessionId, batch.token, observations);
+              }
+            }
             const counts = scopeCounts(session);
             const documents = input.includeDocuments === true
               ? Object.entries(session.documents)
@@ -2466,11 +2561,17 @@ class SiYuanMasterKernelPlugin {
               .slice(0, SCOPE_NEXT_DOCUMENTS);
             return {
               sessionId,
-              scopeChanged,
-              ...(scopeChanged
+              scopeChanged: scopeChanged || session.state === "superseded",
+              ...(scopeChanged || session.state === "superseded"
                 ? { scopeChangedMessage: "scope membership changed; open a new session or re-open the same scope to re-enumerate" }
                 : {}),
               complete: !scopeChanged && scopeComplete(session),
+              state: session.state,
+              nextVerificationCursor: session.verification && !session.verification.verifiedAt ? session.verification.token : null,
+              verifiedDocuments: session.verification?.nextIndex ?? 0,
+              verifiedStartedAt: session.verification?.startedAt ?? null,
+              verifiedAt: session.verification?.verifiedAt ?? null,
+              deliveryConfirmed: counts.complete === counts.total,
               persistDegraded: session.persistDegraded === true,
               loadError: this.coverage.loadErrorState(),
               counts,

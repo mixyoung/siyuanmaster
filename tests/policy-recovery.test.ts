@@ -218,7 +218,7 @@ describe("policy storage and recovery", () => {
     const f = await fixture();
     const lifecycle = f.api.plugin.lifecycle as { onload(): Promise<void>; onunload(): Promise<void> };
     await lifecycle.onload();
-    expect(f.api.agent.registerCapability).toHaveBeenCalledTimes(33);
+    expect(f.api.agent.registerCapability).toHaveBeenCalledTimes(35);
     expect([...f.handlers.keys()].sort()).toEqual(["getStatus", "reloadPolicy", "savePolicy"]);
     const reply = await f.handlers.get("savePolicy")!(structuredClone(B)) as Reply;
     expect(reply.ready).toBe(true);

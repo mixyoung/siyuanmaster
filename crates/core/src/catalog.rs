@@ -305,7 +305,7 @@ mod tests {
         let catalog = Catalog::load().unwrap();
         assert_eq!(catalog.product.id, "siyuanmaster");
         assert_eq!(catalog.product.technical_id, "siyuanmaster");
-        assert_eq!(catalog.product.version, "0.6.1");
+        assert_eq!(catalog.product.version, "0.6.2");
         assert_eq!(catalog.product.display_name.zh_cn, "思源大师");
         assert_eq!(catalog.product.display_name.default, "SiYuanMaster");
         assert_eq!(catalog.namespaces.plugin, "plugin__siyuanmaster__");
@@ -333,9 +333,9 @@ mod tests {
     }
 
     #[test]
-    fn twenty_eight_tools_include_the_original_sixteen() {
+    fn current_tools_include_the_original_sixteen() {
         let catalog = Catalog::load().unwrap();
-        assert_eq!(catalog.plugin_tools.len(), 28);
+        assert_eq!(catalog.plugin_tools.len(), 35);
         assert_eq!(catalog.compatibility.original_tool_count, 16);
         let names: HashSet<&str> = catalog
             .plugin_tools
@@ -361,6 +361,8 @@ mod tests {
             "validate_wiki_template",
             "validate_pdf_conversion",
             "plan_source_ingest",
+            "ack_scope_read",
+            "close_scope_read",
         ] {
             assert!(names.contains(name), "missing new tool {name}");
         }
@@ -370,7 +372,7 @@ mod tests {
     fn fq_names_are_computed_from_the_current_technical_id_only() {
         let catalog = Catalog::load().unwrap();
         let fq = catalog.all_tool_fq_names();
-        assert_eq!(fq.len(), 28);
+        assert_eq!(fq.len(), 35);
         for name in &fq {
             assert!(
                 name.starts_with("plugin__siyuanmaster__"),

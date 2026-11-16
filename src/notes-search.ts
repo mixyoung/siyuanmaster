@@ -37,6 +37,16 @@ function boxesLiteral(notebookIds: readonly string[]): string {
     .join(",");
 }
 
+function scopePredicate(scope: SearchSqlInput["scope"]): string {
+  return scope ? `AND b.root_id IN (
+    SELECT scope_doc.id FROM blocks scope_doc
+    WHERE scope_doc.type = 'd' AND scope_doc.id = scope_doc.root_id
+      AND scope_doc.box = '${escapeSqlLiteral(assertSiyuanId(scope.notebookId, "notebookId"))}'
+      AND (scope_doc.id = '${escapeSqlLiteral(assertSiyuanId(scope.rootDocumentId, "rootDocumentId"))}'
+        OR scope_doc.path LIKE '${escapeSqlLiteral(`${scope.directory}/%`)}' ESCAPE '${LIKE_ESCAPE}')
+  )` : "";
+}
+
 /**
  * Document-page SQL: aggregates matches per document (GROUP BY root_id),
  * orders by root_id ASC, and pages with a keyset predicate. Policy box and
@@ -48,18 +58,7 @@ export function buildSearchDocumentPageSql(input: SearchSqlInput): string {
   const match = `(COALESCE(b.content, '') LIKE '${pattern}' ESCAPE '${LIKE_ESCAPE}'
                  OR COALESCE(b.name, '') LIKE '${pattern}' ESCAPE '${LIKE_ESCAPE}'
                  OR COALESCE(b.tag, '') LIKE '${pattern}' ESCAPE '${LIKE_ESCAPE}')`;
-  const scope = input.scope
-    ? `AND b.root_id IN (
-         SELECT scope_doc.id FROM blocks scope_doc
-         WHERE scope_doc.type = 'd'
-           AND scope_doc.id = scope_doc.root_id
-           AND scope_doc.box = '${escapeSqlLiteral(input.scope.notebookId)}'
-           AND (
-             scope_doc.id = '${escapeSqlLiteral(assertSiyuanId(input.scope.rootDocumentId, "rootDocumentId"))}'
-             OR scope_doc.path LIKE '${escapeSqlLiteral(`${input.scope.directory}/%`)}' ESCAPE '${LIKE_ESCAPE}'
-           )
-       )`
-    : "";
+  const scope = scopePredicate(input.scope);
   const after = input.afterDocumentId
     ? `AND b.root_id > '${escapeSqlLiteral(assertSiyuanId(input.afterDocumentId, "afterDocumentId"))}'`
     : "";
@@ -74,9 +73,9 @@ export function buildSearchDocumentPageSql(input: SearchSqlInput): string {
      LIMIT ${input.limit + 1}`;
 }
 
-/** Best-block SQL for one page of documents; the caller picks the first row per document. */
+/** Rank inside SQL so the host result cap cannot let one document crowd out others. */
 export function buildSearchMatchedBlocksSql(
-  input: Pick<SearchSqlInput, "query" | "notebookIds"> & {
+  input: Pick<SearchSqlInput, "query" | "notebookIds" | "scope"> & {
     documentIds: readonly string[];
   },
 ): string {
@@ -88,7 +87,8 @@ export function buildSearchMatchedBlocksSql(
   const ids = input.documentIds
     .map((id) => `'${escapeSqlLiteral(assertSiyuanId(id, "documentId"))}'`)
     .join(",");
-  return `SELECT
+  return `SELECT matched_id, document_id, box, hpath, title, tags, snippet, block_type, updated
+   FROM (SELECT
      b.id AS matched_id,
      b.root_id AS document_id,
      b.box AS box,
@@ -97,13 +97,18 @@ export function buildSearchMatchedBlocksSql(
      d.tag AS tags,
      b.content AS snippet,
      b.type AS block_type,
-     b.updated AS updated
+     b.updated AS updated,
+     ROW_NUMBER() OVER (PARTITION BY b.root_id ORDER BY b.updated DESC, b.id ASC) AS match_rank
    FROM blocks b
    JOIN blocks d ON d.id = b.root_id
    WHERE b.root_id IN (${ids})
      AND b.box IN (${boxes})
      AND ${match}
-   ORDER BY b.root_id ASC, b.updated DESC, b.id ASC`;
+     ${scopePredicate(input.scope)}
+   ) ranked
+   WHERE match_rank = 1
+   ORDER BY document_id ASC
+   LIMIT ${input.documentIds.length}`;
 }
 
 export interface SearchMatchRow {

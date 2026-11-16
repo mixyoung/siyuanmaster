@@ -5,18 +5,15 @@ import {
   documentComplete,
   mergeCoverage,
   parseScopeSession,
-  pruneScopeSessions,
   scopeComplete,
   scopeCounts,
   slicePage,
-  MAX_ACTIVE_SCOPE_SESSIONS,
-  MAX_STORED_SCOPE_SESSIONS,
   type ScopeMember,
   type ScopeSession,
 } from "../src/scope-read";
 
 function member(id: string, path: string, updated = "20261001000000"): ScopeMember {
-  return { id, path, updated };
+  return { id, path, updated, contentMark: "1:" + updated };
 }
 
 function session(partial: Partial<ScopeSession> = {}): ScopeSession {
@@ -186,6 +183,7 @@ describe("derived completion", () => {
       contentHash: "h".repeat(64),
       contentLength: length,
       coverage,
+      deliveryConfirmed: true,
     };
   }
 
@@ -201,13 +199,13 @@ describe("derived completion", () => {
 
   it("requires a recorded hash", () => {
     const doc = coveredDocument([[0, 50000]], 50000);
-    delete doc.contentHash;
-    expect(documentComplete(doc)).toBe(false);
+    expect(documentComplete({ ...doc, contentHash: undefined })).toBe(false);
   });
 
   it("scopeComplete enforces every conjunct", () => {
     const complete = session({
       documents: { [docId]: coveredDocument([[0, 50000]], 50000) },
+      revision: 1, verification: { token: "t", revision: 1, nextIndex: 1, startedAt: "now", verifiedAt: "now" },
     });
     expect(scopeComplete(complete)).toBe(true);
     expect(scopeCounts(complete)).toMatchObject({ total: 1, complete: 1, pending: 0 });
@@ -252,58 +250,6 @@ describe("derived completion", () => {
         }),
       ),
     ).toBe(false);
-  });
-});
-
-describe("session pruning", () => {
-  function completeSession(id: string, createdAt: string): ScopeSession {
-    return session({
-      sessionId: id,
-      createdAt,
-      scopeFingerprint: `f-${id}`,
-      documents: {
-        "20260101000000-aaaaaaa": {
-          status: "pending",
-          path: "/20260101000000-aaaaaaa.sy",
-          updated: "20261001000000",
-          contentHash: "h".repeat(64),
-          contentLength: 10,
-          coverage: [[0, 10]],
-        },
-      },
-    });
-  }
-
-  function incompleteSession(id: string, createdAt: string): ScopeSession {
-    return session({
-      sessionId: id,
-      createdAt,
-      scopeFingerprint: `f-${id}`,
-      documents: {
-        "20260101000000-aaaaaaa": {
-          status: "pending",
-          path: "/20260101000000-aaaaaaa.sy",
-          updated: "20261001000000",
-          coverage: [],
-        },
-      },
-    });
-  }
-
-  it("keeps sessions up to the stored cap without dropping live work", () => {
-    const sessions = [
-      completeSession("old-complete", "2026-10-01T00:00:00.000Z"),
-      incompleteSession("old-incomplete", "2026-10-02T00:00:00.000Z"),
-      ...Array.from({ length: MAX_STORED_SCOPE_SESSIONS - 2 }, (_, i) =>
-        completeSession(`bulk-${i}`, new Date(Date.parse("2026-10-03T00:00:00.000Z") + i * 1000).toISOString()),
-      ),
-    ];
-    const pruned = pruneScopeSessions(sessions);
-    expect(pruned.length).toBeLessThanOrEqual(
-      Math.max(MAX_STORED_SCOPE_SESSIONS, MAX_ACTIVE_SCOPE_SESSIONS),
-    );
-    // Oldest complete session dropped first; incomplete kept.
-    expect(pruned.some((s) => s.sessionId === "old-incomplete")).toBe(true);
   });
 });
 

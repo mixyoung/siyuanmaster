@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
 import {
   buildSearchDocumentPageSql,
   buildSearchMatchedBlocksSql,
@@ -11,6 +12,24 @@ import {
 } from "../src/notes-search";
 
 const NB = "20260101000000-notebok";
+
+it("keeps other documents when the first document exceeds the host's 64-row result cap", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("CREATE TABLE blocks (id TEXT, root_id TEXT, box TEXT, hpath TEXT, content TEXT, name TEXT, tag TEXT, type TEXT, updated TEXT)");
+    const insert = db.prepare("INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?,?)");
+    const a = "20260101000000-aaaaaaa";
+    const b = "20260101000000-bbbbbbb";
+    for (const id of [a, b]) insert.run(id, id, NB, "/doc", "title", "", "", "d", "20261116000000");
+    for (let i = 0; i < 100; i++) insert.run(`block-${i}`, a, NB, "/doc", "needle", "", "", "p", String(i));
+    insert.run("other-block", b, NB, "/doc", "needle", "", "", "p", "20261116000000");
+    const sql = buildSearchMatchedBlocksSql({ query: "needle", notebookIds: [NB], documentIds: [a, b] });
+    const rows = db.prepare(sql).all() as unknown as SearchMatchRow[];
+    const hostRows = /\bLIMIT\s+\d+/i.test(sql) ? rows : rows.slice(0, 64);
+    expect(pickBestMatchPerDocument(hostRows).map(row => row.document_id)).toEqual([a, b]);
+    expect(rows).toHaveLength(2);
+  } finally { db.close(); }
+});
 
 describe("LIKE escaping", () => {
   it("escapes wildcards and the escape character literally", () => {

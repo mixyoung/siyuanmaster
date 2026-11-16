@@ -1,5 +1,11 @@
 # 思源大师（SiYuanMaster / siyuanmaster）产品架构规格
 
+> 2026-11-16 修复契约（本地实现完成，实机待验）：授权笔记仍是知识底座。范围读取区分页面生成、调用方接收确认、正文版本终检；只有确认区间完整、逐篇导出哈希终检通过、范围与权限仍有效且账本持久化成功，才返回 `complete=true`。页凭据由 `read_note` 返回，通过 `ack_scope_read` 批量确认；`scope_read_status` 分批终检，返回续检游标和核验时间，不承诺跨文档原子快照。`close_scope_read` 只关闭覆盖会话，不改笔记。旧账本保留服务端读取区间，但不冒充已确认接收。正文偏移按完整导出长度校验，搜索在数据库内每文档只返回一个匹配块。实机验收另行记录，历史记录不追溯改写。
+>
+> 本地验证（基于 `06eef5d` 的工作区修改）：搜索 64 行截断与 200 万偏移回归先失败后通过；完整构建、27 文件 / 574 项 TypeScript 测试（含 19 项临时目录安装测试）、71 项 Rust 测试、生产类型检查、核心改动测试严格类型检查、目录新鲜度、Skill 校验与 ZIP CRC 均通过。额外对两个旧 MCP 冒烟测试启用严格类型检查仍有 42 项既有诊断；内存加载 HEAD 与当前文件的诊断完全一致，未扩大为本轮修复。本地验证未操作真实思源；后续提交与推送状态以 Git 记录为准。
+>
+> 本地安装包 SHA-256：`4953a8ba0ea4c9bf3a3d8be2b037547c35c75f03611c89cf7c3e98d5e4a1e4b5`。新版本协议要求调用方使用配套 Skill 的接收确认步骤；旧 v1 账本须重新读取确认，v2 重启保留已确认进度并重新终检。
+
 > 唯一规格文档 · 中文 · 自包含
 >
 > - 规格版本：1.4
@@ -115,7 +121,7 @@
 
 ### 2.3 工具集合
 
-30 个裸工具名 = 原 16 + `resolve_document` + `read_note_segments` + `open_scope_read` + `scope_read_status` + `edit_block` + `register_knowledge_source` + `register_wiki_authority` + `knowledge_status` + `find_wiki_candidates` + `list_wiki_templates` + `render_wiki_template` + `validate_wiki_template` + `validate_pdf_conversion` + `plan_source_ingest`。全部只生成当前 `plugin__siyuanmaster__` 前缀下的 Agent capability 模型名，并由思源 3.8.1 追加稳定哈希。
+35 个裸工具名 = 原 16 + `create_notebook` + `set_notebook_sort` + `rename_notebook` + `ack_scope_read` + `close_scope_read` + `resolve_document` + `read_note_segments` + `open_scope_read` + `scope_read_status` + `edit_block` + `register_knowledge_source` + `register_wiki_authority` + `knowledge_status` + `find_wiki_candidates` + `list_wiki_templates` + `render_wiki_template` + `validate_wiki_template` + `validate_pdf_conversion` + `plan_source_ingest`。全部只生成当前 `plugin__siyuanmaster__` 前缀下的 Agent capability 模型名，并由思源 3.8.1 追加稳定哈希。
 
 ---
 
@@ -245,7 +251,7 @@ catalog/capabilities.json
 - `pnpm build` **必须**执行 catalog check
 - 只声明当前技术命名空间；不声明 `legacyPlugin` 双命名空间
 
-工具 30 个（见 §2.3）。事务名：`SafeWriteTxn`。Wiki 模板另以 `catalog/wiki-templates.json` 为语义事实源，由生成脚本固化进 TS 内核，并受 freshness test 约束。
+工具 35 个（见 §2.3）。事务名：`SafeWriteTxn`。Wiki 模板另以 `catalog/wiki-templates.json` 为语义事实源，由生成脚本固化进 TS 内核，并受 freshness test 约束。
 
 ---
 

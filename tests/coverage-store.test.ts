@@ -66,11 +66,152 @@ function makeApi(options: {
   return { api: api as unknown as kernel.ISiyuan, current, puts };
 }
 
+async function receive(store: CoverageStore, input: Parameters<CoverageStore["recordReadPage"]>[0]) {
+  const receipt = await store.recordReadPage(input);
+  await store.acknowledge(input.sessionId, [receipt.receiptId]);
+}
+
 const hashOf = computeContentHash;
 
 const members = [member(DOC, `/${DOC}.sy`)];
 
 describe("coverage store", () => {
+  it("expires inactive sessions and frees their active slots", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-16T00:00:00Z"));
+      const { api } = makeApi(); const store = new CoverageStore(api);
+      const opened = await store.openScope({ notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members });
+      vi.setSystemTime(new Date("2026-11-24T00:00:00Z"));
+      const fresh = await store.openScope({ notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members });
+      expect(fresh.resumed).toBe(false);
+      expect(store.getSession(opened.session.sessionId)?.state).toBe("expired");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("invalidates an in-flight verification when new read progress arrives", async () => {
+    const { api } = makeApi(); const store = new CoverageStore(api);
+    const { session } = await store.openScope({ notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members });
+    const input = { sessionId: session.sessionId, documentId: DOC, updated: members[0].updated,
+      contentHash: await hashOf("a"), contentLength: 1, start: 0, end: 1 };
+    await receive(store, input);
+    const batch = await store.beginVerification(session.sessionId);
+    await store.recordReadPage(input);
+    await expect(store.finishVerificationBatch(session.sessionId, batch.token, [{ documentId: DOC, contentHash: input.contentHash, contentLength: 1 }])).rejects.toThrow("changed during verification");
+    expect(scopeComplete(store.getSession(session.sessionId)!)).toBe(false);
+  });
+  it("prunes closed history at the stored limit without dropping active work", async () => {
+    const { api } = makeApi(); const store = new CoverageStore(api);
+    const active = (await store.openScope({ notebookId: NB, rootDocumentId: "active-root", scopeFingerprint: "active", members })).session;
+    for (let i = 0; i < 15; i++) {
+      const { session } = await store.openScope({ notebookId: NB, rootDocumentId: `old-${i}`, scopeFingerprint: `f${i}`, members });
+      await store.close(session.sessionId);
+    }
+    expect(store.snapshot()).toHaveLength(12);
+    expect(store.getSession(active.sessionId)?.state).toBe("active");
+    expect(store.getSession(active.sessionId)?.documents).toEqual(active.documents);
+  });
+  it("rejects stale receipts and makes a mixed valid/invalid acknowledgement atomic", async () => {
+    const { api } = makeApi(); const store = new CoverageStore(api);
+    const { session } = await store.openScope({ notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members });
+    const input = { sessionId: session.sessionId, documentId: DOC, updated: members[0].updated,
+      contentHash: await hashOf("a"), contentLength: 1, start: 0, end: 1 };
+    const a = await store.recordReadPage(input);
+    await expect(store.acknowledge(session.sessionId, [a.receiptId, "forged"])).rejects.toThrow("receipt");
+    expect(store.getSession(session.sessionId)!.documents[DOC].coverage).toEqual([]);
+    await store.recordReadPage({ ...input, contentHash: await hashOf("b") });
+    await expect(store.acknowledge(session.sessionId, [a.receiptId])).rejects.toThrow("receipt");
+  });
+
+  it("requires acknowledgement even for an empty document", async () => {
+    const { api } = makeApi(); const store = new CoverageStore(api);
+    const { session } = await store.openScope({ notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members });
+    const receipt = await store.recordReadPage({ sessionId: session.sessionId, documentId: DOC, updated: members[0].updated,
+      contentHash: await hashOf(""), contentLength: 0, start: 0, end: 0 });
+    expect(documentComplete(store.getSession(session.sessionId)!.documents[DOC])).toBe(false);
+    await store.acknowledge(session.sessionId, [receipt.receiptId]);
+    expect(documentComplete(store.getSession(session.sessionId)!.documents[DOC])).toBe(true);
+  });
+
+  it("does not turn completed history into active-capacity exhaustion on restart", async () => {
+    const { api } = makeApi(); let store = new CoverageStore(api);
+    const hash = await hashOf("a");
+    for (let i = 0; i < 6; i++) {
+      const { session } = await store.openScope({ notebookId: NB, rootDocumentId: `root-${i}`, scopeFingerprint: `f${i}`, members });
+      await receive(store, { sessionId: session.sessionId, documentId: DOC, updated: members[0].updated, contentHash: hash, contentLength: 1, start: 0, end: 1 });
+      const batch = await store.beginVerification(session.sessionId);
+      await store.finishVerificationBatch(session.sessionId, batch.token, [{ documentId: DOC, contentHash: hash, contentLength: 1 }]);
+    }
+    store = new CoverageStore(api);
+    const opened = await store.openScope({ notebookId: NB, rootDocumentId: "new-root", scopeFingerprint: "new", members });
+    expect(opened.resumed).toBe(false);
+    expect(store.snapshot().filter(session => session.completedAt)).toHaveLength(6);
+  });
+
+  it("rejects fulfilled writes whose readback does not contain the progress", async () => {
+    const { api } = makeApi(); const store = new CoverageStore(api);
+    const { session } = await store.openScope({ notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members });
+    api.storage.put = vi.fn(async () => undefined) as never;
+    await expect(store.recordReadPage({ sessionId: session.sessionId, documentId: DOC, updated: members[0].updated,
+      contentHash: await hashOf("body"), contentLength: 4, start: 0, end: 4 })).rejects.toThrow("readback mismatch");
+    expect(store.getSession(session.sessionId)!.persistDegraded).toBe(true);
+  });
+  it("does not count an exported but unacknowledged page as received", async () => {
+    const { api } = makeApi(); const store = new CoverageStore(api);
+    const { session } = await store.openScope({ notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members });
+    const receipt = await store.recordReadPage({ sessionId: session.sessionId, documentId: DOC, updated: members[0].updated,
+      contentHash: await hashOf("body"), contentLength: 4, start: 0, end: 4 });
+    expect(documentComplete(store.getSession(session.sessionId)!.documents[DOC])).toBe(false);
+    await store.acknowledge(session.sessionId, [receipt.receiptId]);
+    await store.acknowledge(session.sessionId, [receipt.receiptId]);
+    expect(store.getSession(session.sessionId)!.documents[DOC].coverage).toEqual([[0, 4]]);
+    expect(scopeComplete(store.getSession(session.sessionId)!)).toBe(false); // Still needs a fresh hash check.
+  });
+
+  it("preserves acknowledged progress and contentMark across restart but requires fresh verification", async () => {
+    const { api } = makeApi(); let store = new CoverageStore(api);
+    const input = { notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members };
+    const { session } = await store.openScope(input);
+    await receive(store, { sessionId: session.sessionId, documentId: DOC, updated: members[0].updated,
+      contentHash: await hashOf("body"), contentLength: 4, start: 0, end: 4 });
+    store = new CoverageStore(api);
+    const resumed = await store.openScope(input);
+    expect(resumed.resumed).toBe(true);
+    expect(resumed.session.documents[DOC].contentMark).toBe(members[0].contentMark);
+    expect(documentComplete(resumed.session.documents[DOC])).toBe(true);
+    expect(scopeComplete(resumed.session)).toBe(false);
+  });
+
+  it("migrates v1 server coverage without forging receiver confirmation", async () => {
+    const { api, current } = makeApi(); const store = new CoverageStore(api);
+    const input = { notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members };
+    const { session } = await store.openScope(input);
+    await receive(store, { sessionId: session.sessionId, documentId: DOC, updated: members[0].updated,
+      contentHash: await hashOf("body"), contentLength: 4, start: 0, end: 4 });
+    (current.get(COVERAGE_STORAGE_KEY) as { schemaVersion: number }).schemaVersion = 1;
+    const recovered = await new CoverageStore(api).openScope(input);
+    expect(recovered.session.documents[DOC].coverage).toEqual([]);
+    expect(recovered.session.documents[DOC].servedCoverage).toEqual([[0, 4]]);
+    expect(documentComplete(recovered.session.documents[DOC])).toBe(false);
+  });
+
+  it("reopening changed membership supersedes abandoned snapshots instead of exhausting capacity", async () => {
+    const { api } = makeApi(); const store = new CoverageStore(api);
+    for (let i = 0; i < 8; i++) await store.openScope({ notebookId: NB, rootDocumentId: null, scopeFingerprint: `f${i}`, members });
+    expect(store.snapshot().filter(session => session.state === "active")).toHaveLength(1);
+    expect(store.snapshot().filter(session => session.state === "superseded")).toHaveLength(7);
+  });
+
+  it("explicit close frees a slot and retains other active work", async () => {
+    const { api } = makeApi(); const store = new CoverageStore(api);
+    const sessions = [];
+    for (let i = 0; i < 4; i++) sessions.push((await store.openScope({ notebookId: NB, rootDocumentId: `root-${i}`, scopeFingerprint: `f${i}`, members })).session);
+    await store.close(sessions[0].sessionId);
+    await store.openScope({ notebookId: NB, rootDocumentId: "new-root", scopeFingerprint: "f5", members });
+    expect(store.getSession(sessions[0].sessionId)?.state).toBe("closed");
+    expect(store.snapshot().filter(session => session.state === "active")).toHaveLength(4);
+    expect(store.getSession(sessions[1].sessionId)?.documents[DOC]).toEqual(sessions[1].documents[DOC]);
+  });
   it("starts empty on a confirmed-missing ledger and persists sessions", async () => {
     const { api, current } = makeApi();
     const store = new CoverageStore(api);
@@ -93,11 +234,11 @@ describe("coverage store", () => {
       notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members,
     });
     const contentHash = await hashOf("x".repeat(30_000));
-    store.recordReadPage({
+    await receive(store, {
       sessionId: session.sessionId, documentId: DOC, updated: "20261001000000",
       contentHash, contentLength: 30_000, start: 0, end: 20_000,
     });
-    store.recordReadPage({
+    await receive(store, {
       sessionId: session.sessionId, documentId: DOC, updated: "20261001000000",
       contentHash, contentLength: 30_000, start: 20_000, end: 30_000,
     });
@@ -112,7 +253,7 @@ describe("coverage store", () => {
       notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members,
     });
     const contentHash = await hashOf("y".repeat(30_000));
-    store.recordReadPage({
+    await receive(store, {
       sessionId: session.sessionId, documentId: DOC, updated: "20261001000000",
       contentHash, contentLength: 30_000, start: 29_990, end: 30_000,
     });
@@ -127,13 +268,13 @@ describe("coverage store", () => {
     });
     const hashA = await hashOf("a".repeat(30_000));
     const hashB = await hashOf("b".repeat(30_000));
-    store.recordReadPage({
+    await receive(store, {
       sessionId: session.sessionId, documentId: DOC, updated: "20261001000000",
       contentHash: hashA, contentLength: 30_000, start: 0, end: 30_000,
     });
     expect(documentComplete(store.getSession(session.sessionId)!.documents[DOC])).toBe(true);
     // Edit lands; the agent restarts the document from offset 0 under a new hash.
-    store.recordReadPage({
+    await receive(store, {
       sessionId: session.sessionId, documentId: DOC, updated: "20261002000000",
       contentHash: hashB, contentLength: 30_000, start: 0, end: 10_000,
     });
@@ -149,7 +290,7 @@ describe("coverage store", () => {
     const opened = await store.openScope({
       notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members,
     });
-    store.recordReadPage({
+    await receive(store, {
       sessionId: opened.session.sessionId, documentId: DOC, updated: "20261001000000",
       contentHash, contentLength: 100, start: 0, end: 100,
     });
@@ -171,7 +312,7 @@ describe("coverage store", () => {
     const store = new CoverageStore(api);
     for (let i = 0; i < 4; i += 1) {
       await store.openScope({
-        notebookId: NB, rootDocumentId: null, scopeFingerprint: `f${i}`, members,
+        notebookId: NB, rootDocumentId: `root-${i}`, scopeFingerprint: `f${i}`, members,
       });
     }
     await expect(
@@ -200,15 +341,12 @@ describe("coverage store", () => {
     api.storage.put = vi.fn(async () => {
       throw new Error("disk full mid-session");
     }) as never;
-    expect(() =>
-      store.recordReadPage({
-        sessionId: session.sessionId, documentId: DOC, updated: "20261001000000",
-        contentHash, contentLength: 100, start: 0, end: 100,
-      }),
-    ).not.toThrow();
-    await new Promise((resolve) => setImmediate(resolve));
+    await expect(store.recordReadPage({
+      sessionId: session.sessionId, documentId: DOC, updated: "20261001000000",
+      contentHash, contentLength: 100, start: 0, end: 100,
+    })).rejects.toThrow("disk full");
     const stored = store.getSession(session.sessionId)!;
-    expect(documentComplete(stored.documents[DOC])).toBe(true);
+    expect(documentComplete(stored.documents[DOC])).toBe(false);
     expect(stored.persistDegraded).toBe(true);
     expect(scopeComplete(stored)).toBe(false);
   });
@@ -279,16 +417,13 @@ describe("coverage store concurrency", () => {
       notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members,
     });
     const contentHash = await hashOf("c".repeat(10_000));
-    const record = (start: number, end: number) =>
-      store.recordReadPage({
+    const record = async (start: number, end: number) =>
+      await receive(store, {
         sessionId: session.sessionId, documentId: DOC, updated: "20261001000000",
         contentHash, contentLength: 10_000, start, end,
       });
     // Interleave interval writes from disjoint pages.
-    record(0, 3_000);
-    record(6_000, 9_000);
-    record(3_000, 6_000);
-    record(9_000, 10_000);
+    await Promise.all([record(0, 3_000), record(6_000, 9_000), record(3_000, 6_000), record(9_000, 10_000)]);
     await new Promise((resolve) => setImmediate(resolve));
     const doc = store.getSession(session.sessionId)!.documents[DOC];
     expect(doc.coverage).toEqual([[0, 10_000]]);

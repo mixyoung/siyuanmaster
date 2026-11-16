@@ -192,6 +192,18 @@ function answerSql(
 }
 
 describe("read_note full-body pagination", () => {
+  it("continues beyond two million UTF-16 units without repeating a page", async () => {
+    const f = await fixture();
+    const content = "x".repeat(2_100_000);
+    f.exports.set(ROOT, { hPath: "/根", content });
+    const { computeContentHash } = await import("../src/write-transaction");
+    const expectedContentHash = await computeContentHash(content);
+    const first = await f.tool("read_note")({ documentId: ROOT, offset: 2_000_000, maxChars: 50_000, expectedContentHash });
+    const next = await f.tool("read_note")({ documentId: ROOT, offset: first.result!.nextOffset, maxChars: 50_000, expectedContentHash });
+    expect(next.ok).toBe(true);
+    expect(next.result!.offset).toBe(2_050_000);
+    expect(next.result!.nextOffset).toBeNull();
+  }, 30_000);
   it("pages the whole export under one hash and reassembles exactly", async () => {
     const f = await fixture();
     const full = f.exports.get(ROOT)!.content;
@@ -210,11 +222,16 @@ describe("read_note full-body pagination", () => {
     expect(`${r1.content}${r2.content}`).toBe(full);
   });
 
-  it("refuses an offset page without the hash and beyond-cap offsets are clamped", async () => {
+  it("refuses missing hashes and invalid offsets instead of silently clamping", async () => {
     const f = await fixture();
     const denied = (await f.tool("read_note")({ documentId: ROOT, offset: 100 })) as ToolReply;
     expect(denied.ok).toBe(false);
     expect(denied.error?.code).toBe("invalid_request");
+    const first = await f.tool("read_note")({ documentId: ROOT });
+    for (const offset of [-1, 1.5, Number.MAX_SAFE_INTEGER, f.exports.get(ROOT)!.content.length + 1]) {
+      const result = await f.tool("read_note")({ documentId: ROOT, offset, expectedContentHash: first.result!.contentHash });
+      expect(result.error?.code).toBe("invalid_request");
+    }
   });
 
   it("fails state_changed when the document is edited mid-pagination and never splices versions", async () => {
@@ -232,6 +249,64 @@ describe("read_note full-body pagination", () => {
 });
 
 describe("scope read coverage", () => {
+  it("verifies larger scopes in bounded batches and rejects replayed verification cursors", async () => {
+    const f = await fixture();
+    f.exports.set(ROOT, { hPath: "/根", content: "root" });
+    f.exports.set(CHILD, { hPath: "/根/子", content: "child" });
+    for (let i = 0; i < 7; i++) {
+      const id = `20260101000001-doc000${i}`;
+      f.blocks.set(id, { ...f.blocks.get(ROOT)!, id, root_id: id, path: `/${id}.sy` });
+      f.exports.set(id, { hPath: "/fixture", content: `body ${i}` });
+    }
+    const scope = await openScope(f); const sessionId = scope.sessionId as string;
+    for (const id of f.exports.keys()) await readFully(f, sessionId, id);
+    const first = await f.tool("scope_read_status")({ sessionId });
+    expect(first.result).toMatchObject({ complete: false, verifiedDocuments: 8 });
+    expect(first.result!.nextVerificationCursor).toEqual(expect.any(String));
+    const second = await f.tool("scope_read_status")({ sessionId, verificationCursor: first.result!.nextVerificationCursor });
+    expect(second.result).toMatchObject({ complete: true, verifiedDocuments: 9, nextVerificationCursor: null });
+    expect(second.result!.verifiedAt).toEqual(expect.any(String));
+    expect((await f.tool("scope_read_status")({ sessionId, verificationCursor: first.result!.nextVerificationCursor })).ok).toBe(false);
+  });
+
+  it("closes a revoked scope without returning protected document details", async () => {
+    const f = await fixture(); const scope = await openScope(f);
+    await f.setPolicy([NB_OTHER]);
+    const reply = await f.tool("close_scope_read")({ sessionId: scope.sessionId });
+    expect(reply.result).toEqual({ sessionId: scope.sessionId, closed: true, complete: false });
+  });
+
+  it("still returns a readable page when receipt persistence fails, with no acknowledgement token", async () => {
+    const f = await fixture(); const scope = await openScope(f);
+    const originalPut = f.api.storage.put.getMockImplementation()!;
+    f.api.storage.put.mockImplementation(async (key, value) => {
+      if (key === "coverage.json") throw new Error("coverage disk full");
+      return originalPut(key, value);
+    });
+    const reply = await f.tool("read_note")({ documentId: ROOT, scopeSessionId: scope.sessionId });
+    expect(reply.ok).toBe(true);
+    expect(reply.result!.content).toEqual(expect.any(String));
+    expect(reply.result!.pageReceipt).toBeUndefined();
+    expect(reply.result!.coverageError).toContain("disk full");
+  });
+  it("hash-verifies completed documents even when every SQL timestamp and count stays unchanged", async () => {
+    const f = await fixture(); const scope = await openScope(f); const sessionId = scope.sessionId as string;
+    await readFully(f, sessionId, ROOT); await readFully(f, sessionId, CHILD);
+    expect((await f.tool("scope_read_status")({ sessionId })).result!.complete).toBe(true);
+    f.exports.set(CHILD, { hPath: "/根/子", content: "changed without SQL metadata change" });
+    const result = await f.tool("scope_read_status")({ sessionId });
+    expect(result.result!.complete).toBe(false);
+    expect(result.result!.counts).toMatchObject({ complete: 1, changed: 1 });
+  });
+
+  it("does not count a response the caller never acknowledges", async () => {
+    const f = await fixture(); const scope = await openScope(f); const sessionId = scope.sessionId as string;
+    await f.tool("read_note")({ documentId: ROOT, maxChars: 50_000, scopeSessionId: sessionId });
+    await readFully(f, sessionId, CHILD);
+    const result = await f.tool("scope_read_status")({ sessionId });
+    expect(result.result!.complete).toBe(false);
+    expect(result.result!.counts).toMatchObject({ complete: 1, pending: 1 });
+  });
   async function openScope(f: Awaited<ReturnType<typeof fixture>>) {
     const reply = (await f.tool("open_scope_read")({ notebookId: NB })) as ToolReply;
     expect(reply.ok).toBe(true);
@@ -253,6 +328,9 @@ describe("scope read coverage", () => {
       })) as ToolReply;
       if (!reply.ok) return reply;
       const result = reply.result!;
+      const receipt = result.pageReceipt as { receiptId: string };
+      expect(receipt?.receiptId).toEqual(expect.any(String));
+      expect(await f.tool("ack_scope_read")({ sessionId, receiptIds: [receipt.receiptId] })).toMatchObject({ ok: true });
       hash = result.contentHash as string;
       if (result.nextOffset === null || result.nextOffset === undefined) return reply;
       offset = result.nextOffset as number;

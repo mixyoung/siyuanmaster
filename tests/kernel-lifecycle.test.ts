@@ -43,11 +43,11 @@ describe("kernel IPluginLifecycle bindings", () => {
     );
   });
 
-  it("registers all 33 tools through the SiYuan 3.8.1 Agent capability API", () => {
+  it("registers all 35 tools through the SiYuan 3.8.1 Agent capability API", () => {
     expect(source).toMatch(/this\.api\.agent\.registerCapability\(/);
     expect(source).toMatch(/this\.api\.agent\.unregisterCapability\(/);
     expect(source).not.toMatch(/this\.api\.mcp\.(?:registerTool|unregisterTool)\(/);
-    expect(source.match(/await\s+this\.registerTool\(/g)).toHaveLength(32);
+    expect(source.match(/await\s+this\.registerTool\(/g)).toHaveLength(34);
   });
 
   it("declares conservative local effects for read and write capabilities", () => {
