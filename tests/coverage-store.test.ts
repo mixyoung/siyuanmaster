@@ -76,6 +76,22 @@ const hashOf = computeContentHash;
 const members = [member(DOC, `/${DOC}.sy`)];
 
 describe("coverage store", () => {
+  it("accepts host JSON readback that reorders object keys recursively", async () => {
+    const { api } = makeApi();
+    const originalGet = api.storage.get.bind(api.storage);
+    const reorder = (value: unknown): unknown => Array.isArray(value) ? value.map(reorder) :
+      value && typeof value === "object" ? Object.fromEntries(Object.entries(value).reverse().map(([key, item]) => [key, reorder(item)])) : value;
+    api.storage.get = vi.fn(async key => {
+      const stored = await originalGet(key);
+      return { json: async () => reorder(await stored.json()) };
+    }) as never;
+    const store = new CoverageStore(api);
+    const { session } = await store.openScope({ notebookId: NB, rootDocumentId: null, scopeFingerprint: "f1", members });
+    await receive(store, { sessionId: session.sessionId, documentId: DOC, updated: members[0].updated,
+      contentHash: await hashOf("body"), contentLength: 4, start: 0, end: 4 });
+    expect(documentComplete(store.getSession(session.sessionId)!.documents[DOC])).toBe(true);
+    expect(store.getSession(session.sessionId)!.persistDegraded).toBeUndefined();
+  });
   it("expires inactive sessions and frees their active slots", async () => {
     vi.useFakeTimers();
     try {

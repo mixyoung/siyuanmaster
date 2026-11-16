@@ -1,7 +1,7 @@
 import type * as kernel from "siyuan/kernel";
 import { CURRENT_STORAGE_DIR } from "./migration";
 import { KERNEL_POLICY_TIMEOUT_MS, PolicyTaskQueue, type PolicyTask } from "./policy-sync";
-import { confirmStorageFileMissing } from "./storage-state";
+import { confirmStorageFileMissing, equalStoredJson } from "./storage-state";
 import {
   MAX_ACTIVE_SCOPE_SESSIONS, MAX_STORED_SCOPE_SESSIONS, MAX_PENDING_PAGE_RECEIPTS,
   SCOPE_SESSION_TTL_MS, SCOPE_VERIFY_BATCH, documentComplete, mergeCoverage,
@@ -318,7 +318,7 @@ export class CoverageStore {
       await task.wait(() => this.api.storage.put(COVERAGE_STORAGE_KEY, payload));
       const stored = await task.wait(() => this.api.storage.get(COVERAGE_STORAGE_KEY));
       const observed = await task.wait(() => stored.json());
-      if (JSON.stringify(observed) !== payload) throw new Error("coverage write readback mismatch");
+      if (!equalStoredJson(observed, JSON.parse(payload))) throw new Error("coverage write readback mismatch");
       for (const session of this.sessions!) delete session.persistDegraded;
     } catch (error) {
       throw new Error(`coverage persistence failed: ${error instanceof Error ? error.message : String(error)}`);

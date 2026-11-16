@@ -13,7 +13,7 @@ import {
   type MigrationStorageIO,
 } from "./migration";
 import { KERNEL_POLICY_TIMEOUT_MS, PolicySyncBlockedError, PolicyTaskQueue, serializeStorageKey, type PolicyTask } from "./policy-sync";
-import { confirmStorageFileMissing } from "./storage-state";
+import { confirmStorageFileMissing, equalStoredJson } from "./storage-state";
 import type { AuditEntry, PluginPolicy } from "./types";
 
 export type PolicyLoadState = "loading" | "loaded" | "initial-default" | "unavailable";
@@ -175,7 +175,7 @@ export class PolicyStorage {
         const write = async () => {
           await task.wait(() => this.api.storage.put(key, JSON.stringify(value)));
           const observed = await this.readCurrent(task, key);
-          if (JSON.stringify(observed) !== JSON.stringify(value)) {
+        if (!equalStoredJson(observed, value)) {
             throw new Error(`Migration write readback mismatch: ${key}`);
           }
         };

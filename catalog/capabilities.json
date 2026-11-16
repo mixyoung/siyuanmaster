@@ -7,7 +7,7 @@
       "default": "SiYuanMaster",
       "zh-CN": "思源大师"
     },
-    "version": "0.6.2",
+    "version": "0.7.0",
     "minAppVersion": "3.8.1"
   },
   "namespaces": {
@@ -326,6 +326,6 @@
   "compatibility": {
     "originalToolCount": 16,
     "technicalIdPolicy": "siyuanmaster-with-storage-migration",
-    "note": "0.6.1 targets SiYuan 3.8.1 and registers 28 controlled tools through siyuan.agent.registerCapability, including read-only PDF conversion validation. Agent model names retain the plugin__siyuanmaster__ prefix and add SiYuan's stable hash suffix. On first load, policy/audit are auto-copied from data/storage/petal/siyuan-agent-access/ into data/storage/petal/siyuanmaster/ when the new side is missing (new always wins; fail-closed defaults; migration marker for idempotency). The legacy petal directory is retained and never deleted."
+    "note": "0.7.0 registers 35 controlled Agent capabilities through siyuan.agent.registerCapability. Runtime names include a stable hash suffix. All authorized notes form the knowledge base. Scope completion requires page acknowledgement, full-export hash verification and persisted coverage. Legacy v1 coverage requires renewed delivery confirmation. Existing policies and legacy petal storage are preserved; unreadable data is never treated as confirmed absence."
   }
 }
