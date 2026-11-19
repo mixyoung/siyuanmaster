@@ -4,11 +4,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import archiver from "archiver";
 import { build } from "esbuild";
+import { validatePackageImages } from "./check-package-images.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, "..");
 const distDir = path.join(rootDir, "dist");
 const packagePath = path.join(rootDir, "package.zip");
+
+// Preserve existing artifacts when invalid source assets fail the release gate.
+await validatePackageImages(rootDir);
 
 await rm(distDir, { recursive: true, force: true });
 await rm(packagePath, { force: true });
